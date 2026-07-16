@@ -20,6 +20,13 @@ export default function App() {
   const [start, setStart] = useState('');
   const [end, setEnd] = useState('');
 
+  // Phase 2: quality/format come from this specific video's real formats
+  // (info.resolutions), not a guessed generic list.
+  const [quality, setQuality] = useState(''); // '' = best available
+  const [format, setFormat] = useState('mp4');
+  const [audioOnly, setAudioOnly] = useState(false);
+  const [audioFormat, setAudioFormat] = useState('mp3');
+
   const [progress, setProgress] = useState(null);
   const [downloading, setDownloading] = useState(false);
   const [result, setResult] = useState(null);
@@ -44,6 +51,7 @@ export default function App() {
     setLoadingInfo(true);
     setInfo(null);
     setInfoError(null);
+    setQuality(''); // this video's resolutions haven't loaded yet
     try {
       setInfo(await window.api.getVideoInfo(url));
     } catch (err) {
@@ -59,7 +67,14 @@ export default function App() {
     setResult(null);
     setDownloadError(null);
     try {
-      const res = await window.api.downloadVideo({ url, section });
+      const res = await window.api.downloadVideo({
+        url,
+        section,
+        quality: audioOnly || !quality ? null : Number(quality),
+        format,
+        audioOnly,
+        audioFormat,
+      });
       setResult(res);
     } catch (err) {
       setDownloadError(err.message);
@@ -114,12 +129,65 @@ export default function App() {
           </div>
         )}
 
+        {info && (
+          <div className="rounded-lg bg-neutral-900 border border-neutral-800 p-3 flex flex-col gap-2">
+            <label className="flex items-center gap-2 text-xs text-neutral-300">
+              <input
+                type="checkbox"
+                checked={audioOnly}
+                onChange={(e) => setAudioOnly(e.target.checked)}
+              />
+              Audio only
+            </label>
+
+            {audioOnly ? (
+              <select
+                value={audioFormat}
+                onChange={(e) => setAudioFormat(e.target.value)}
+                className="rounded-lg bg-neutral-800 border border-neutral-700 px-3 py-2 text-sm"
+              >
+                <option value="mp3">MP3</option>
+                <option value="m4a">M4A</option>
+                <option value="wav">WAV</option>
+              </select>
+            ) : (
+              <div className="flex gap-2">
+                <select
+                  value={quality}
+                  onChange={(e) => setQuality(e.target.value)}
+                  className="w-1/2 rounded-lg bg-neutral-800 border border-neutral-700 px-3 py-2 text-sm"
+                >
+                  <option value="">Best available</option>
+                  {info.resolutions.map((r) => (
+                    <option key={r} value={r}>{r}p</option>
+                  ))}
+                </select>
+                <select
+                  value={format}
+                  onChange={(e) => setFormat(e.target.value)}
+                  className="w-1/2 rounded-lg bg-neutral-800 border border-neutral-700 px-3 py-2 text-sm"
+                >
+                  <option value="mp4">MP4</option>
+                  <option value="mkv">MKV</option>
+                  <option value="webm">WEBM</option>
+                </select>
+              </div>
+            )}
+          </div>
+        )}
+
         <button
           onClick={() => handleDownload(null)}
           disabled={!url || downloading}
           className="rounded-lg bg-emerald-500 hover:bg-emerald-400 disabled:opacity-50 text-neutral-950 font-medium px-4 py-2 text-sm"
         >
-          {downloading ? 'Downloading…' : 'Download Best Quality'}
+          {downloading
+            ? 'Downloading…'
+            : audioOnly
+              ? `Download Audio (${audioFormat.toUpperCase()})`
+              : quality
+                ? `Download ${quality}p`
+                : 'Download Best Quality'}
         </button>
 
         <div className="border-t border-neutral-800 pt-3 flex flex-col gap-2">

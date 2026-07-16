@@ -75,6 +75,10 @@ ipcMain.handle('video:download', async (_event, options) => {
     downloadsDir,
     url: options.url,
     section: options.section || null,
+    quality: options.quality || null,
+    format: options.format || null,
+    audioOnly: Boolean(options.audioOnly),
+    audioFormat: options.audioFormat || null,
     onProgress: (progress) => {
       if (mainWindow) mainWindow.webContents.send('video:downloadProgress', progress);
     },

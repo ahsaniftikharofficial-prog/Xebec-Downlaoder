@@ -47,10 +47,10 @@ function getVideoInfo(ytDlpPath, url) {
 // video+section, and never passes --no-continue, so if a previous attempt
 // left a .part file behind, yt-dlp resumes it by default instead of
 // starting over.
-function downloadVideo({ ytDlpPath, ffprobePath, ffmpegDir, url, downloadsDir, section, onProgress }) {
+function downloadVideo({ ytDlpPath, ffprobePath, ffmpegDir, url, downloadsDir, section, quality, format, audioOnly, audioFormat, onProgress }) {
   return new Promise((resolve, reject) => {
     const outputTemplate = buildOutputTemplate(downloadsDir, Boolean(section));
-    const args = buildDownloadArgs({ url, outputTemplate, ffmpegDir, section });
+    const args = buildDownloadArgs({ url, outputTemplate, ffmpegDir, section, quality, format, audioOnly, audioFormat });
     const proc = spawn(ytDlpPath, args);
 
     let resultFilePath = null;

@@ -18,7 +18,23 @@ function parseVideoInfo(jsonText) {
     duration: data.duration ?? null,
     thumbnail: data.thumbnail ?? null,
     uploader: data.uploader ?? null,
+    resolutions: extractResolutions(data.formats),
   };
+}
+
+// Pulls the real, distinct video resolutions this specific video actually
+// offers, highest first. Only counts formats that include a video stream
+// (ignores audio-only formats), so the quality dropdown never offers a
+// resolution that doesn't really exist for this video.
+function extractResolutions(formats) {
+  if (!Array.isArray(formats)) return [];
+  const heights = new Set();
+  for (const f of formats) {
+    if (f && f.vcodec && f.vcodec !== 'none' && Number.isFinite(f.height)) {
+      heights.add(f.height);
+    }
+  }
+  return [...heights].sort((a, b) => b - a);
 }
 
 // Where the downloaded file goes. Section (clip) downloads get their own
@@ -29,10 +45,32 @@ function buildOutputTemplate(downloadsDir, isSection) {
 }
 
 // section is either null (full video) or { start, end } in whole seconds.
-function buildDownloadArgs({ url, outputTemplate, ffmpegDir, section }) {
-  const args = [
-    '-f', 'bv*+ba/b',
-    '--merge-output-format', 'mp4',
+// quality is either null (best available) or a target height like 1080 —
+// pulled from this video's real resolution list (see extractResolutions).
+// format is the output container for a video download: 'mp4' | 'mkv' | 'webm'.
+// audioOnly + audioFormat switch the whole download to audio-only, converted
+// via ffmpeg to 'mp3' | 'm4a' | 'wav' instead of a video container.
+function buildDownloadArgs({ url, outputTemplate, ffmpegDir, section, quality, format, audioOnly, audioFormat }) {
+  const args = [];
+
+  if (audioOnly) {
+    args.push('-f', 'bestaudio/best');
+    args.push('-x', '--audio-format', audioFormat || 'mp3');
+  } else {
+    // Capping height on both halves of the selector keeps the cap honest
+    // even if yt-dlp falls back to a single pre-muxed format instead of
+    // merging separate video+audio streams.
+    const heightCap = quality ? `[height<=${quality}]` : '';
+    args.push('-f', `bv*${heightCap}+ba/b${heightCap}`);
+    // merge-output-format sets the container when two streams get merged;
+    // remux-video sets it when yt-dlp already picked one pre-muxed format
+    // (merge-output-format is ignored in that case). Together they make
+    // sure the format dropdown's choice always lands on disk.
+    args.push('--merge-output-format', format || 'mp4');
+    args.push('--remux-video', format || 'mp4');
+  }
+
+  args.push(
     '--ffmpeg-location', ffmpegDir,
     '-o', outputTemplate,
     '--newline',
@@ -43,7 +81,7 @@ function buildDownloadArgs({ url, outputTemplate, ffmpegDir, section }) {
     // merge/move) is actually complete — confirmed against yt-dlp's source
     // to run as a genuine download, not just a simulation.
     '--print', 'after_move:%(filepath)s',
-  ];
+  );
 
   if (section) {
     args.push('--download-sections', `*${section.start}-${section.end}`);
@@ -104,6 +142,7 @@ function isLikelyFilePath(line) {
 module.exports = {
   buildInfoArgs,
   parseVideoInfo,
+  extractResolutions,
   buildOutputTemplate,
   buildDownloadArgs,
   parseProgressLine,
