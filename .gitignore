@@ -1,0 +1,6 @@
+node_modules/
+dist/
+.tmp-ffmpeg.zip
+.tmp-ffmpeg-extract/
+resources/bin/ffmpeg.exe
+resources/bin/ffprobe.exe
