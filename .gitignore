@@ -4,3 +4,6 @@ dist/
 .tmp-ffmpeg-extract/
 resources/bin/ffmpeg.exe
 resources/bin/ffprobe.exe
+
+# Ignore the entire resources directory
+resources/
