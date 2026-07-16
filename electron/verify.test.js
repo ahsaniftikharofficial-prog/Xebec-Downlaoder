@@ -3,6 +3,8 @@ import {
   buildFfprobeArgs,
   parseFfprobeDurationOutput,
   isDurationCloseEnough,
+  buildFfprobeImageArgs,
+  parseFfprobeDimensionsOutput,
 } from './verify.js';
 
 describe('buildFfprobeArgs', () => {
@@ -38,5 +40,31 @@ describe('isDurationCloseEnough', () => {
   it('rejects when either value is missing', () => {
     expect(isDurationCloseEnough(null, 60, 5)).toBe(false);
     expect(isDurationCloseEnough(60, null, 5)).toBe(false);
+  });
+});
+
+describe('buildFfprobeImageArgs', () => {
+  it('asks ffprobe for just width/height of the first video stream, as JSON', () => {
+    const args = buildFfprobeImageArgs('C:\\Downloads\\thumb.jpg');
+    expect(args).toContain('-show_entries');
+    expect(args).toContain('stream=width,height');
+    expect(args).toContain('-select_streams');
+    expect(args[args.indexOf('-select_streams') + 1]).toBe('v:0');
+    expect(args[args.length - 1]).toBe('C:\\Downloads\\thumb.jpg');
+  });
+});
+
+describe('parseFfprobeDimensionsOutput', () => {
+  it('parses width/height out of real ffprobe JSON output', () => {
+    const json = JSON.stringify({ streams: [{ width: 1920, height: 1080 }] });
+    expect(parseFfprobeDimensionsOutput(json)).toEqual({ width: 1920, height: 1080 });
+  });
+
+  it('returns nulls when there is no decodable video stream', () => {
+    expect(parseFfprobeDimensionsOutput(JSON.stringify({ streams: [] }))).toEqual({
+      width: null,
+      height: null,
+    });
+    expect(parseFfprobeDimensionsOutput(JSON.stringify({}))).toEqual({ width: null, height: null });
   });
 });

@@ -26,9 +26,32 @@ async function probeDuration(ffprobePath, filePath) {
   return parseFfprobeDurationOutput(output);
 }
 
+// A saved thumbnail only counts as verified once ffprobe can actually
+// decode it and report real pixel dimensions — the same "don't trust a
+// clean exit alone" reasoning as the video's duration check.
+function buildFfprobeImageArgs(filePath) {
+  return ['-v', 'error', '-select_streams', 'v:0', '-show_entries', 'stream=width,height', '-of', 'json', filePath];
+}
+
+function parseFfprobeDimensionsOutput(jsonText) {
+  const data = JSON.parse(jsonText);
+  const stream = data && Array.isArray(data.streams) ? data.streams[0] : null;
+  const width = stream && Number.isFinite(stream.width) ? stream.width : null;
+  const height = stream && Number.isFinite(stream.height) ? stream.height : null;
+  return { width, height };
+}
+
+async function probeImageDimensions(ffprobePath, filePath) {
+  const output = await runBinary(ffprobePath, buildFfprobeImageArgs(filePath));
+  return parseFfprobeDimensionsOutput(output);
+}
+
 module.exports = {
   buildFfprobeArgs,
   parseFfprobeDurationOutput,
   isDurationCloseEnough,
   probeDuration,
+  buildFfprobeImageArgs,
+  parseFfprobeDimensionsOutput,
+  probeImageDimensions,
 };

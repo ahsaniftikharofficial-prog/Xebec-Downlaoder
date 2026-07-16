@@ -32,6 +32,26 @@ export default function App() {
   const [result, setResult] = useState(null);
   const [downloadError, setDownloadError] = useState(null);
 
+  // Phase 3: thumbnail / subtitles / metadata are each independent
+  // one-click saves — none of them touch the video download above, and a
+  // failure in one can't take down the others.
+  const [thumbnailUrl, setThumbnailUrl] = useState('');
+  const [thumbnailFormat, setThumbnailFormat] = useState('jpg');
+  const [savingThumbnail, setSavingThumbnail] = useState(false);
+  const [thumbnailResult, setThumbnailResult] = useState(null);
+  const [thumbnailError, setThumbnailError] = useState(null);
+
+  const [selectedLangs, setSelectedLangs] = useState([]);
+  const [subtitleFormat, setSubtitleFormat] = useState('srt');
+  const [savingSubtitles, setSavingSubtitles] = useState(false);
+  const [subtitleResult, setSubtitleResult] = useState(null);
+  const [subtitleError, setSubtitleError] = useState(null);
+
+  const [metadataFormat, setMetadataFormat] = useState('json');
+  const [savingMetadata, setSavingMetadata] = useState(false);
+  const [metadataResult, setMetadataResult] = useState(null);
+  const [metadataError, setMetadataError] = useState(null);
+
   useEffect(() => {
     const unsubscribe = window.api.onDownloadProgress((p) => setProgress(p));
     return unsubscribe;
@@ -52,12 +72,85 @@ export default function App() {
     setInfo(null);
     setInfoError(null);
     setQuality(''); // this video's resolutions haven't loaded yet
+
+    // A new video means the previous one's thumbnail pick, subtitle
+    // selection, and any leftover save results no longer apply.
+    setThumbnailUrl('');
+    setSelectedLangs([]);
+    setThumbnailResult(null);
+    setThumbnailError(null);
+    setSubtitleResult(null);
+    setSubtitleError(null);
+    setMetadataResult(null);
+    setMetadataError(null);
+
     try {
-      setInfo(await window.api.getVideoInfo(url));
+      const fetched = await window.api.getVideoInfo(url);
+      setInfo(fetched);
+      // Default the picker to the best (largest) thumbnail this video has.
+      setThumbnailUrl(fetched.thumbnails?.[0]?.url || fetched.thumbnail || '');
     } catch (err) {
       setInfoError(err.message);
     } finally {
       setLoadingInfo(false);
+    }
+  }
+
+  async function handleSaveThumbnail() {
+    setSavingThumbnail(true);
+    setThumbnailResult(null);
+    setThumbnailError(null);
+    try {
+      const res = await window.api.downloadThumbnail({
+        thumbnailUrl,
+        title: info.title,
+        id: info.id,
+        format: thumbnailFormat,
+      });
+      setThumbnailResult(res);
+    } catch (err) {
+      setThumbnailError(err.message);
+    } finally {
+      setSavingThumbnail(false);
+    }
+  }
+
+  function toggleLang(code) {
+    setSelectedLangs((prev) =>
+      prev.includes(code) ? prev.filter((c) => c !== code) : [...prev, code]
+    );
+  }
+
+  async function handleSaveSubtitles() {
+    setSavingSubtitles(true);
+    setSubtitleResult(null);
+    setSubtitleError(null);
+    try {
+      const res = await window.api.downloadSubtitles({
+        url,
+        id: info.id,
+        langs: selectedLangs,
+        format: subtitleFormat,
+      });
+      setSubtitleResult(res);
+    } catch (err) {
+      setSubtitleError(err.message);
+    } finally {
+      setSavingSubtitles(false);
+    }
+  }
+
+  async function handleSaveMetadata() {
+    setSavingMetadata(true);
+    setMetadataResult(null);
+    setMetadataError(null);
+    try {
+      const res = await window.api.saveMetadata({ info, format: metadataFormat });
+      setMetadataResult(res);
+    } catch (err) {
+      setMetadataError(err.message);
+    } finally {
+      setSavingMetadata(false);
     }
   }
 
@@ -237,6 +330,150 @@ export default function App() {
           <div className="rounded-lg bg-neutral-900 border border-neutral-800 p-3 text-xs font-mono">
             <div>{result.verified ? '\u2705 Verified' : '\u26a0\ufe0f Finished but not verified'}</div>
             <div className="truncate">{result.filePath}</div>
+          </div>
+        )}
+
+        {info && (
+          <div className="border-t border-neutral-800 pt-3 flex flex-col gap-4">
+            <p className="text-xs text-neutral-500">
+              Extras — thumbnail, subtitles, and metadata each save on their
+              own, independent of the video download above.
+            </p>
+
+            <div className="rounded-lg bg-neutral-900 border border-neutral-800 p-3 flex flex-col gap-2">
+              <div className="text-xs font-medium text-neutral-300">Thumbnail</div>
+              {thumbnailUrl && (
+                <img
+                  src={thumbnailUrl}
+                  alt="Thumbnail preview"
+                  className="rounded-md max-h-32 w-full object-cover"
+                />
+              )}
+              <div className="flex gap-2">
+                <select
+                  value={thumbnailUrl}
+                  onChange={(e) => setThumbnailUrl(e.target.value)}
+                  className="w-2/3 rounded-lg bg-neutral-800 border border-neutral-700 px-3 py-2 text-sm"
+                >
+                  {info.thumbnails.map((t, i) => (
+                    <option key={t.url} value={t.url}>
+                      {i === 0 ? 'Best — ' : ''}
+                      {t.width && t.height ? `${t.width}\u00d7${t.height}` : 'Unknown size'}
+                    </option>
+                  ))}
+                </select>
+                <select
+                  value={thumbnailFormat}
+                  onChange={(e) => setThumbnailFormat(e.target.value)}
+                  className="w-1/3 rounded-lg bg-neutral-800 border border-neutral-700 px-3 py-2 text-sm"
+                >
+                  <option value="jpg">JPG</option>
+                  <option value="png">PNG</option>
+                </select>
+              </div>
+              <button
+                onClick={handleSaveThumbnail}
+                disabled={!thumbnailUrl || savingThumbnail}
+                className="rounded-lg bg-neutral-800 hover:bg-neutral-700 disabled:opacity-50 text-sm px-4 py-2"
+              >
+                {savingThumbnail ? 'Saving…' : 'Save Thumbnail'}
+              </button>
+              {thumbnailError && <p className="text-red-400 text-xs">{thumbnailError}</p>}
+              {thumbnailResult && (
+                <div className="text-xs font-mono">
+                  <div>
+                    {thumbnailResult.verified ? '\u2705 Verified' : '\u26a0\ufe0f Saved but not verified'}
+                    {thumbnailResult.width ? ` (${thumbnailResult.width}\u00d7${thumbnailResult.height})` : ''}
+                  </div>
+                  <div className="truncate text-neutral-400">{thumbnailResult.filePath}</div>
+                </div>
+              )}
+            </div>
+
+            <div className="rounded-lg bg-neutral-900 border border-neutral-800 p-3 flex flex-col gap-2">
+              <div className="text-xs font-medium text-neutral-300">Subtitles</div>
+              {info.subtitleTracks.length === 0 ? (
+                <p className="text-xs text-neutral-500">No subtitle tracks available for this video.</p>
+              ) : (
+                <>
+                  <div className="flex flex-col gap-1 max-h-32 overflow-y-auto pr-1">
+                    {info.subtitleTracks.map((t) => (
+                      <label key={t.code} className="flex items-center gap-2 text-xs text-neutral-300">
+                        <input
+                          type="checkbox"
+                          checked={selectedLangs.includes(t.code)}
+                          onChange={() => toggleLang(t.code)}
+                        />
+                        {t.name} ({t.code}){t.auto ? ' \u2014 auto-generated' : ''}
+                      </label>
+                    ))}
+                  </div>
+                  <div className="flex gap-2">
+                    <select
+                      value={subtitleFormat}
+                      onChange={(e) => setSubtitleFormat(e.target.value)}
+                      className="w-1/2 rounded-lg bg-neutral-800 border border-neutral-700 px-3 py-2 text-sm"
+                    >
+                      <option value="srt">SRT</option>
+                      <option value="vtt">VTT</option>
+                    </select>
+                    <button
+                      onClick={handleSaveSubtitles}
+                      disabled={selectedLangs.length === 0 || savingSubtitles}
+                      className="w-1/2 rounded-lg bg-neutral-800 hover:bg-neutral-700 disabled:opacity-50 text-sm px-4 py-2"
+                    >
+                      {savingSubtitles ? 'Saving…' : 'Save Subtitles'}
+                    </button>
+                  </div>
+                </>
+              )}
+              {subtitleError && <p className="text-red-400 text-xs">{subtitleError}</p>}
+              {subtitleResult && (
+                <div className="text-xs font-mono">
+                  {subtitleResult.succeeded.length > 0 && (
+                    <div>{'\u2705'} Saved: {subtitleResult.succeeded.join(', ')}</div>
+                  )}
+                  {subtitleResult.failed.length > 0 && (
+                    <div className="text-amber-400">{'\u26a0\ufe0f'} Not available: {subtitleResult.failed.join(', ')}</div>
+                  )}
+                </div>
+              )}
+            </div>
+
+            <div className="rounded-lg bg-neutral-900 border border-neutral-800 p-3 flex flex-col gap-2">
+              <div className="text-xs font-medium text-neutral-300">Metadata</div>
+              <div className="text-xs text-neutral-400 flex flex-col gap-0.5">
+                <div>Channel: {info.channel || 'Unknown'}</div>
+                <div>Uploaded: {info.uploadDate || 'Unknown'}</div>
+                {info.description && (
+                  <div className="line-clamp-3 text-neutral-500">{info.description}</div>
+                )}
+              </div>
+              <div className="flex gap-2">
+                <select
+                  value={metadataFormat}
+                  onChange={(e) => setMetadataFormat(e.target.value)}
+                  className="w-1/2 rounded-lg bg-neutral-800 border border-neutral-700 px-3 py-2 text-sm"
+                >
+                  <option value="json">JSON</option>
+                  <option value="txt">TXT</option>
+                </select>
+                <button
+                  onClick={handleSaveMetadata}
+                  disabled={savingMetadata}
+                  className="w-1/2 rounded-lg bg-neutral-800 hover:bg-neutral-700 disabled:opacity-50 text-sm px-4 py-2"
+                >
+                  {savingMetadata ? 'Saving…' : 'Save Metadata'}
+                </button>
+              </div>
+              {metadataError && <p className="text-red-400 text-xs">{metadataError}</p>}
+              {metadataResult && (
+                <div className="text-xs font-mono">
+                  <div>{metadataResult.verified ? '\u2705 Verified' : '\u26a0\ufe0f Saved but not verified'}</div>
+                  <div className="truncate text-neutral-400">{metadataResult.filePath}</div>
+                </div>
+              )}
+            </div>
           </div>
         )}
       </div>

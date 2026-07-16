@@ -2,6 +2,7 @@ const { app, BrowserWindow, ipcMain } = require('electron');
 const path = require('path');
 const { getBinPath, firstLine, runBinary } = require('./engine');
 const { getVideoInfo, downloadVideo } = require('./downloadManager');
+const { downloadThumbnail, downloadSubtitles, saveMetadata } = require('./assetManager');
 
 const isDev = process.env.NODE_ENV === 'development';
 const projectRoot = path.join(__dirname, '..');
@@ -82,6 +83,54 @@ ipcMain.handle('video:download', async (_event, options) => {
     onProgress: (progress) => {
       if (mainWindow) mainWindow.webContents.send('video:downloadProgress', progress);
     },
+  });
+});
+
+// options: { thumbnailUrl, title, id, format }
+ipcMain.handle('thumbnail:download', async (_event, options) => {
+  const root = resourcesRoot();
+  const ffmpegPath = getBinPath(root, isDev, 'ffmpeg.exe');
+  const ffprobePath = getBinPath(root, isDev, 'ffprobe.exe');
+  const downloadsDir = app.getPath('downloads');
+
+  return downloadThumbnail({
+    ffmpegPath,
+    ffprobePath,
+    downloadsDir,
+    thumbnailUrl: options.thumbnailUrl,
+    title: options.title,
+    id: options.id,
+    format: options.format || 'jpg',
+  });
+});
+
+// options: { url, id, langs, format }
+ipcMain.handle('subtitles:download', async (_event, options) => {
+  const root = resourcesRoot();
+  const ytDlpPath = getBinPath(root, isDev, 'yt-dlp.exe');
+  const ffmpegDir = path.dirname(getBinPath(root, isDev, 'ffmpeg.exe'));
+  const downloadsDir = app.getPath('downloads');
+
+  return downloadSubtitles({
+    ytDlpPath,
+    ffmpegDir,
+    downloadsDir,
+    url: options.url,
+    id: options.id,
+    langs: options.langs || [],
+    format: options.format || 'srt',
+  });
+});
+
+// options: { info, format }
+ipcMain.handle('metadata:save', async (_event, options) => {
+  const downloadsDir = app.getPath('downloads');
+  return saveMetadata({
+    downloadsDir,
+    title: options.info?.title,
+    id: options.info?.id,
+    format: options.format || 'json',
+    info: options.info,
   });
 });
 

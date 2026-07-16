@@ -4,9 +4,14 @@ import {
   buildInfoArgs,
   parseVideoInfo,
   extractResolutions,
+  extractThumbnails,
+  extractSubtitleTracks,
+  formatUploadDate,
   buildOutputTemplate,
   buildDownloadArgs,
+  buildSubtitleArgs,
   parseProgressLine,
+  parseSubtitleFilename,
   isLikelyFilePath,
 } from './ytdlp.js';
 
@@ -25,20 +30,36 @@ describe('parseVideoInfo', () => {
       title: 'A Test Video',
       duration: 125.4,
       thumbnail: 'https://example.com/thumb.jpg',
+      thumbnails: [{ url: 'https://example.com/thumb.jpg', width: 1280, height: 720 }],
       uploader: 'Some Channel',
+      channel: 'Some Channel (real name)',
+      upload_date: '20240115',
+      description: 'A description.',
+      webpage_url: 'https://youtu.be/abc123',
       formats: [
         { vcodec: 'avc1', height: 720 },
         { vcodec: 'vp9', height: 1080 },
         { vcodec: 'none', height: 9999 }, // audio-only format, must be ignored
       ],
+      subtitles: { en: [{ ext: 'vtt' }] },
+      automatic_captions: { fr: [{ ext: 'vtt' }] },
     });
     expect(parseVideoInfo(json)).toEqual({
       id: 'abc123',
       title: 'A Test Video',
       duration: 125.4,
       thumbnail: 'https://example.com/thumb.jpg',
+      thumbnails: [{ id: null, url: 'https://example.com/thumb.jpg', width: 1280, height: 720 }],
       uploader: 'Some Channel',
+      channel: 'Some Channel (real name)',
+      uploadDate: '2024-01-15',
+      description: 'A description.',
+      url: 'https://youtu.be/abc123',
       resolutions: [1080, 720],
+      subtitleTracks: [
+        { code: 'en', name: 'en', auto: false },
+        { code: 'fr', name: 'fr', auto: true },
+      ],
     });
   });
 
@@ -47,7 +68,18 @@ describe('parseVideoInfo', () => {
     const result = parseVideoInfo(json);
     expect(result.duration).toBeNull();
     expect(result.thumbnail).toBeNull();
+    expect(result.thumbnails).toEqual([]);
+    expect(result.channel).toBeNull();
+    expect(result.uploadDate).toBeNull();
+    expect(result.description).toBeNull();
+    expect(result.url).toBeNull();
     expect(result.resolutions).toEqual([]);
+    expect(result.subtitleTracks).toEqual([]);
+  });
+
+  it('falls back "channel" to "uploader" when the extractor has no channel field', () => {
+    const json = JSON.stringify({ id: 'abc123', title: 'X', uploader: 'Legacy Name' });
+    expect(parseVideoInfo(json).channel).toBe('Legacy Name');
   });
 });
 
@@ -201,5 +233,149 @@ describe('isLikelyFilePath', () => {
 
   it('rejects an empty line', () => {
     expect(isLikelyFilePath('')).toBe(false);
+  });
+});
+
+describe('extractThumbnails', () => {
+  it('sorts by resolution, largest first', () => {
+    const thumbnails = [
+      { url: 'a', width: 320, height: 180 },
+      { url: 'b', width: 1920, height: 1080 },
+      { url: 'c', width: 640, height: 360 },
+    ];
+    expect(extractThumbnails(thumbnails).map((t) => t.url)).toEqual(['b', 'c', 'a']);
+  });
+
+  it('dedupes by url, keeping the first occurrence', () => {
+    const thumbnails = [
+      { url: 'a', width: 100, height: 100 },
+      { url: 'a', width: 100, height: 100 },
+    ];
+    expect(extractThumbnails(thumbnails)).toHaveLength(1);
+  });
+
+  it('keeps thumbnails with unknown size but sorts them last', () => {
+    const thumbnails = [
+      { url: 'unknown' },
+      { url: 'known', width: 100, height: 100 },
+    ];
+    const result = extractThumbnails(thumbnails);
+    expect(result.map((t) => t.url)).toEqual(['known', 'unknown']);
+    expect(result[1].width).toBeNull();
+  });
+
+  it('returns an empty list when there are no thumbnails at all', () => {
+    expect(extractThumbnails(undefined)).toEqual([]);
+    expect(extractThumbnails([])).toEqual([]);
+  });
+
+  it('skips malformed entries with no url', () => {
+    expect(extractThumbnails([null, {}, { url: 'ok', width: 1, height: 1 }])).toHaveLength(1);
+  });
+});
+
+describe('extractSubtitleTracks', () => {
+  it('merges manual and auto tracks, sorted by language code', () => {
+    const subtitles = { es: [{ ext: 'vtt' }], en: [{ ext: 'vtt' }] };
+    const automaticCaptions = { fr: [{ ext: 'vtt' }] };
+    expect(extractSubtitleTracks(subtitles, automaticCaptions)).toEqual([
+      { code: 'en', name: 'en', auto: false },
+      { code: 'es', name: 'es', auto: false },
+      { code: 'fr', name: 'fr', auto: true },
+    ]);
+  });
+
+  it('prefers the manual track over the auto track for the same language', () => {
+    const subtitles = { en: [{ ext: 'vtt' }] };
+    const automaticCaptions = { en: [{ ext: 'vtt' }] };
+    const result = extractSubtitleTracks(subtitles, automaticCaptions);
+    expect(result).toHaveLength(1);
+    expect(result[0].auto).toBe(false);
+  });
+
+  it('uses the human-readable name when yt-dlp provides one', () => {
+    const subtitles = { en: [{ ext: 'vtt', name: 'English' }] };
+    expect(extractSubtitleTracks(subtitles, null)[0].name).toBe('English');
+  });
+
+  it('returns an empty list when neither subtitles nor auto captions exist', () => {
+    expect(extractSubtitleTracks(null, null)).toEqual([]);
+    expect(extractSubtitleTracks({}, {})).toEqual([]);
+  });
+});
+
+describe('formatUploadDate', () => {
+  it('formats a yt-dlp YYYYMMDD date into YYYY-MM-DD', () => {
+    expect(formatUploadDate('20240115')).toBe('2024-01-15');
+  });
+
+  it('returns null for missing or malformed dates', () => {
+    expect(formatUploadDate(undefined)).toBeNull();
+    expect(formatUploadDate(null)).toBeNull();
+    expect(formatUploadDate('2024-01-15')).toBeNull();
+    expect(formatUploadDate('')).toBeNull();
+  });
+});
+
+describe('buildSubtitleArgs', () => {
+  const base = {
+    url: 'https://youtu.be/abc',
+    outputTemplate: 'D:\\Downloads\\%(title)s.%(ext)s',
+    ffmpegDir: 'D:\\App\\resources\\bin',
+  };
+
+  it('skips the video download and requests both manual and auto subs', () => {
+    const args = buildSubtitleArgs({ ...base, langs: ['en', 'es'], format: 'srt' });
+    expect(args).toContain('--skip-download');
+    expect(args).toContain('--write-subs');
+    expect(args).toContain('--write-auto-subs');
+    expect(args[args.indexOf('--sub-langs') + 1]).toBe('en,es');
+  });
+
+  it('sets both --sub-format and --convert-subs to the chosen format', () => {
+    const args = buildSubtitleArgs({ ...base, langs: ['en'], format: 'vtt' });
+    expect(args[args.indexOf('--sub-format') + 1]).toBe('vtt');
+    expect(args[args.indexOf('--convert-subs') + 1]).toBe('vtt');
+  });
+
+  it('defaults to srt when no format is given', () => {
+    const args = buildSubtitleArgs({ ...base, langs: ['en'] });
+    expect(args[args.indexOf('--sub-format') + 1]).toBe('srt');
+  });
+
+  it('ends with the url', () => {
+    const args = buildSubtitleArgs({ ...base, langs: ['en'] });
+    expect(args[args.length - 1]).toBe(base.url);
+  });
+});
+
+describe('parseSubtitleFilename', () => {
+  it('extracts language and extension from a matching filename', () => {
+    expect(parseSubtitleFilename('My Video [abc123].en.srt', 'abc123')).toEqual({
+      lang: 'en',
+      ext: 'srt',
+    });
+  });
+
+  it('handles region-variant language codes with hyphens', () => {
+    expect(parseSubtitleFilename('My Video [abc123].en-US.vtt', 'abc123')).toEqual({
+      lang: 'en-US',
+      ext: 'vtt',
+    });
+  });
+
+  it('handles a title that itself contains dots', () => {
+    expect(parseSubtitleFilename('Mr. Robot S01E01 [abc123].en.srt', 'abc123')).toEqual({
+      lang: 'en',
+      ext: 'srt',
+    });
+  });
+
+  it('returns null for a video file with no language segment', () => {
+    expect(parseSubtitleFilename('My Video [abc123].mp4', 'abc123')).toBeNull();
+  });
+
+  it('returns null when the id does not match', () => {
+    expect(parseSubtitleFilename('My Video [xyz789].en.srt', 'abc123')).toBeNull();
   });
 });
