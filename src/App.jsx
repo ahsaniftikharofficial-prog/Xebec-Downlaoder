@@ -1,4 +1,6 @@
 import { useState, useEffect } from 'react';
+import ClipScrubber from './ClipScrubber';
+import { parseTimestamp, formatTimestamp, moveClipHandle } from './clip';
 
 function formatDuration(totalSeconds) {
   if (totalSeconds == null) return 'unknown length';
@@ -28,8 +30,15 @@ export default function App() {
   const [infoError, setInfoError] = useState(null);
   const [loadingInfo, setLoadingInfo] = useState(false);
 
-  const [start, setStart] = useState('');
-  const [end, setEnd] = useState('');
+  // Phase 5: clipStart/clipEnd (seconds) drive both the scrubber and the
+  // download call. clipStartText/clipEndText are separate buffer state for
+  // the fallback text inputs, so the user can type freely without the
+  // field reformatting itself mid-keystroke — they only sync back to the
+  // real seconds values on blur (see commitClipStartText/EndText below).
+  const [clipStart, setClipStart] = useState(0);
+  const [clipEnd, setClipEnd] = useState(0);
+  const [clipStartText, setClipStartText] = useState('0:00');
+  const [clipEndText, setClipEndText] = useState('0:00');
 
   // Phase 2: quality/format come from this specific video's real formats
   // (info.resolutions), not a guessed generic list.
@@ -152,6 +161,12 @@ export default function App() {
       setInfo(fetched);
       // Default the picker to the best (largest) thumbnail this video has.
       setThumbnailUrl(fetched.thumbnails?.[0]?.url || fetched.thumbnail || '');
+      // Default the clip range to the whole video.
+      const duration = fetched.duration || 0;
+      setClipStart(0);
+      setClipEnd(duration);
+      setClipStartText(formatTimestamp(0));
+      setClipEndText(formatTimestamp(duration));
     } catch (err) {
       setInfoError(err.message);
     } finally {
@@ -271,6 +286,44 @@ export default function App() {
     } finally {
       setDownloading(false);
     }
+  }
+
+  // Called continuously while dragging either scrubber handle.
+  function handleClipRangeChange({ start: nextStart, end: nextEnd }) {
+    setClipStart(nextStart);
+    setClipEnd(nextEnd);
+    setClipStartText(formatTimestamp(nextStart));
+    setClipEndText(formatTimestamp(nextEnd));
+  }
+
+  // Typing a timestamp doesn't move anything until you click away — that's
+  // what lets someone type "1" then "1:" then "1:23" without the field
+  // fighting them on every keystroke. Invalid text just reverts to the
+  // last valid value instead of erroring.
+  function commitClipStartText() {
+    const parsed = parseTimestamp(clipStartText);
+    const { start: nextStart } = moveClipHandle({
+      which: 'start',
+      time: parsed == null ? clipStart : parsed,
+      start: clipStart,
+      end: clipEnd,
+      duration: info.duration || 0,
+    });
+    setClipStart(nextStart);
+    setClipStartText(formatTimestamp(nextStart));
+  }
+
+  function commitClipEndText() {
+    const parsed = parseTimestamp(clipEndText);
+    const { end: nextEnd } = moveClipHandle({
+      which: 'end',
+      time: parsed == null ? clipEnd : parsed,
+      start: clipStart,
+      end: clipEnd,
+      duration: info.duration || 0,
+    });
+    setClipEnd(nextEnd);
+    setClipEndText(formatTimestamp(nextEnd));
   }
 
   const percent = progress?.percent != null ? Math.round(progress.percent) : null;
@@ -468,34 +521,63 @@ export default function App() {
           </button>
         )}
 
-        {!isPlaylist && (
+        {!isPlaylist && info && info.duration > 0 && (
           <div className="border-t border-neutral-800 pt-3 flex flex-col gap-2">
             <p className="text-xs text-neutral-500">
-              Section download prototype — plain inputs for now. The real
-              drag-to-select scrubber comes in Phase 5.
+              Drag the handles to pick a clip, or type exact times below.
             </p>
-            <div className="flex gap-2">
-              <input
-                value={start}
-                onChange={(e) => setStart(e.target.value)}
-                placeholder="Start (sec)"
-                className="w-1/2 rounded-lg bg-neutral-900 border border-neutral-800 px-3 py-2 text-sm"
-              />
-              <input
-                value={end}
-                onChange={(e) => setEnd(e.target.value)}
-                placeholder="End (sec)"
-                className="w-1/2 rounded-lg bg-neutral-900 border border-neutral-800 px-3 py-2 text-sm"
-              />
+
+            <ClipScrubber
+              duration={info.duration}
+              start={clipStart}
+              end={clipEnd}
+              onChange={handleClipRangeChange}
+            />
+
+            <div className="flex items-center justify-between text-xs text-neutral-500 -mt-2">
+              <span>0:00</span>
+              <span>{formatDuration(info.duration)}</span>
             </div>
+
+            <div className="flex gap-2">
+              <label className="w-1/2 flex flex-col gap-1 text-xs text-neutral-400">
+                Start
+                <input
+                  value={clipStartText}
+                  onChange={(e) => setClipStartText(e.target.value)}
+                  onBlur={commitClipStartText}
+                  className="rounded-lg bg-neutral-900 border border-neutral-800 px-3 py-2 text-sm"
+                />
+              </label>
+              <label className="w-1/2 flex flex-col gap-1 text-xs text-neutral-400">
+                End
+                <input
+                  value={clipEndText}
+                  onChange={(e) => setClipEndText(e.target.value)}
+                  onBlur={commitClipEndText}
+                  className="rounded-lg bg-neutral-900 border border-neutral-800 px-3 py-2 text-sm"
+                />
+              </label>
+            </div>
+
+            <p className="text-xs text-neutral-500">
+              Clip length: {formatTimestamp(clipEnd - clipStart)}
+            </p>
+
             <button
-              onClick={() => handleDownload({ start: Number(start), end: Number(end) })}
-              disabled={!url || !start || !end || downloading}
+              onClick={() => handleDownload({ start: clipStart, end: clipEnd })}
+              disabled={!url || downloading || clipEnd <= clipStart}
               className="rounded-lg bg-neutral-800 hover:bg-neutral-700 disabled:opacity-50 text-sm px-4 py-2"
             >
-              Download Section (prototype)
+              Download Clip ({formatTimestamp(clipEnd - clipStart)})
             </button>
           </div>
+        )}
+
+        {!isPlaylist && info && !info.duration && (
+          <p className="text-xs text-neutral-500 border-t border-neutral-800 pt-3">
+            Clip selection isn't available for this video (unknown or live length).
+          </p>
         )}
 
         {progress && (
