@@ -7,6 +7,17 @@ function formatDuration(totalSeconds) {
   return `${m}:${s.toString().padStart(2, '0')}`;
 }
 
+// Mirrors electron/playlist.js's isPlaylistUrl exactly. Kept in sync by
+// hand since the renderer can't require() Node modules from electron/.
+function isPlaylistUrl(url) {
+  try {
+    const parsed = new URL(url);
+    return parsed.searchParams.has('list') || parsed.pathname.includes('/playlist');
+  } catch {
+    return false;
+  }
+}
+
 export default function App() {
   const [url, setUrl] = useState('');
 
@@ -52,8 +63,37 @@ export default function App() {
   const [metadataResult, setMetadataResult] = useState(null);
   const [metadataError, setMetadataError] = useState(null);
 
+  // Phase 4: a playlist URL gets a checklist + queue instead of the
+  // single-video card above. playlistInfo and info are never set at the
+  // same time — handleGetInfo always clears one before fetching the other.
+  const [playlistInfo, setPlaylistInfo] = useState(null);
+  const [playlistError, setPlaylistError] = useState(null);
+  const [selectedIds, setSelectedIds] = useState(new Set());
+  const [queueItems, setQueueItems] = useState([]);
+  const [queueRunning, setQueueRunning] = useState(false);
+
   useEffect(() => {
     const unsubscribe = window.api.onDownloadProgress((p) => setProgress(p));
+    return unsubscribe;
+  }, []);
+
+  // Per-item queue updates (status + live percent) as each playlist video
+  // is downloaded in turn.
+  useEffect(() => {
+    const unsubscribe = window.api.onPlaylistItemUpdate((update) => {
+      setQueueItems((prev) =>
+        prev.map((item) =>
+          item.id === update.id
+            ? {
+                ...item,
+                status: update.status,
+                percent: update.progress?.percent ?? item.percent,
+                error: update.error ?? null,
+              }
+            : item
+        )
+      );
+    });
     return unsubscribe;
   }, []);
 
@@ -73,6 +113,14 @@ export default function App() {
     setInfoError(null);
     setQuality(''); // this video's resolutions haven't loaded yet
 
+    // A new URL means the previous one's playlist listing/queue no longer
+    // applies, same reasoning as the thumbnail/subtitle/metadata reset below.
+    setPlaylistInfo(null);
+    setPlaylistError(null);
+    setSelectedIds(new Set());
+    setQueueItems([]);
+    setQueueRunning(false);
+
     // A new video means the previous one's thumbnail pick, subtitle
     // selection, and any leftover save results no longer apply.
     setThumbnailUrl('');
@@ -84,6 +132,21 @@ export default function App() {
     setMetadataResult(null);
     setMetadataError(null);
 
+    if (isPlaylistUrl(url)) {
+      try {
+        const fetched = await window.api.getPlaylistInfo(url);
+        setPlaylistInfo(fetched);
+        // Select-all by default — the checklist is there for excluding a
+        // few videos, not for opting every single one in by hand.
+        setSelectedIds(new Set(fetched.entries.map((e) => e.id)));
+      } catch (err) {
+        setPlaylistError(err.message);
+      } finally {
+        setLoadingInfo(false);
+      }
+      return;
+    }
+
     try {
       const fetched = await window.api.getVideoInfo(url);
       setInfo(fetched);
@@ -93,6 +156,40 @@ export default function App() {
       setInfoError(err.message);
     } finally {
       setLoadingInfo(false);
+    }
+  }
+
+  function toggleSelectAll() {
+    setSelectedIds((prev) =>
+      playlistInfo && prev.size === playlistInfo.entries.length
+        ? new Set()
+        : new Set(playlistInfo.entries.map((e) => e.id))
+    );
+  }
+
+  function toggleSelected(id) {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  }
+
+  // Downloads every checked item one at a time via the same downloadVideo()
+  // Phase 1 built — verification and resume come along for free. A failed
+  // item is reported in that row and the queue moves on; see playlist.js's
+  // processQueue for where that isolation actually happens.
+  async function handleDownloadPlaylist() {
+    const items = playlistInfo.entries
+      .filter((e) => selectedIds.has(e.id))
+      .map((e) => ({ id: e.id, url: e.url, title: e.title }));
+
+    setQueueItems(items.map((e) => ({ id: e.id, title: e.title, status: 'pending', percent: null, error: null })));
+    setQueueRunning(true);
+    try {
+      await window.api.downloadPlaylist({ items });
+    } finally {
+      setQueueRunning(false);
     }
   }
 
@@ -178,6 +275,15 @@ export default function App() {
 
   const percent = progress?.percent != null ? Math.round(progress.percent) : null;
 
+  // Playlist links (a /playlist page, or a watch link with &list=) get the
+  // checklist below instead of the single-video download controls further
+  // down — those controls only make sense for exactly one video.
+  const isPlaylist = isPlaylistUrl(url);
+  const queueDone = queueItems.filter((i) => i.status === 'done' || i.status === 'failed').length;
+  const queueSucceeded = queueItems.filter((i) => i.status === 'done').length;
+  const queueFailed = queueItems.filter((i) => i.status === 'failed').length;
+  const queueOverallPercent = queueItems.length ? Math.round((queueDone / queueItems.length) * 100) : 0;
+
   return (
     <div className="min-h-screen bg-neutral-950 text-neutral-100 flex flex-col items-center gap-6 p-8">
       <h1 className="text-2xl font-semibold tracking-tight">YT Downloader</h1>
@@ -215,6 +321,83 @@ export default function App() {
         </button>
 
         {infoError && <p className="text-red-400 text-xs">{infoError}</p>}
+        {playlistError && <p className="text-red-400 text-xs">{playlistError}</p>}
+
+        {playlistInfo && (
+          <div className="rounded-lg bg-neutral-900 border border-neutral-800 p-3 flex flex-col gap-2">
+            <div className="font-medium text-xs">{playlistInfo.title}</div>
+            <div className="text-neutral-400 text-xs">{playlistInfo.entries.length} videos</div>
+
+            <label className="flex items-center gap-2 text-xs text-neutral-300 font-medium border-t border-neutral-800 pt-2">
+              <input
+                type="checkbox"
+                checked={selectedIds.size === playlistInfo.entries.length && playlistInfo.entries.length > 0}
+                onChange={toggleSelectAll}
+              />
+              Select all ({selectedIds.size}/{playlistInfo.entries.length})
+            </label>
+
+            <div className="flex flex-col gap-1 max-h-56 overflow-y-auto pr-1">
+              {playlistInfo.entries.map((e) => (
+                <label key={e.id} className="flex items-center gap-2 text-xs text-neutral-300">
+                  <input
+                    type="checkbox"
+                    checked={selectedIds.has(e.id)}
+                    onChange={() => toggleSelected(e.id)}
+                  />
+                  <span className="truncate flex-1">{e.title}</span>
+                  <span className="text-neutral-500 shrink-0">{formatDuration(e.duration)}</span>
+                </label>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {playlistInfo && (
+          <button
+            onClick={handleDownloadPlaylist}
+            disabled={selectedIds.size === 0 || queueRunning}
+            className="rounded-lg bg-emerald-500 hover:bg-emerald-400 disabled:opacity-50 text-neutral-950 font-medium px-4 py-2 text-sm"
+          >
+            {queueRunning
+              ? `Downloading… (${queueDone}/${queueItems.length})`
+              : `Download Selected (${selectedIds.size})`}
+          </button>
+        )}
+
+        {queueItems.length > 0 && (
+          <div className="rounded-lg bg-neutral-900 border border-neutral-800 p-3 flex flex-col gap-2">
+            <div className="h-2 rounded-full bg-neutral-800 overflow-hidden">
+              <div
+                className="h-full bg-emerald-500 transition-all"
+                style={{ width: `${queueOverallPercent}%` }}
+              />
+            </div>
+            <p className="text-xs text-neutral-500">
+              {queueDone}/{queueItems.length} processed — {queueSucceeded} succeeded, {queueFailed} failed
+            </p>
+
+            <div className="flex flex-col gap-1 max-h-56 overflow-y-auto pr-1">
+              {queueItems.map((item) => (
+                <div key={item.id} className="flex flex-col gap-0.5">
+                  <div className="flex items-center justify-between gap-2 text-xs text-neutral-300">
+                    <span className="truncate flex-1">{item.title}</span>
+                    <span className="text-neutral-400 shrink-0">
+                      {item.status === 'pending' && 'Waiting…'}
+                      {item.status === 'downloading' && (item.percent != null ? `${Math.round(item.percent)}%` : '…')}
+                      {item.status === 'done' && '\u2705'}
+                      {item.status === 'failed' && '\u274c'}
+                    </span>
+                  </div>
+                  {item.status === 'failed' && item.error && (
+                    <p className="text-red-400 text-xs truncate">{item.error}</p>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
         {info && (
           <div className="rounded-lg bg-neutral-900 border border-neutral-800 p-3 text-xs">
             <div className="font-medium">{info.title}</div>
@@ -269,47 +452,51 @@ export default function App() {
           </div>
         )}
 
-        <button
-          onClick={() => handleDownload(null)}
-          disabled={!url || downloading}
-          className="rounded-lg bg-emerald-500 hover:bg-emerald-400 disabled:opacity-50 text-neutral-950 font-medium px-4 py-2 text-sm"
-        >
-          {downloading
-            ? 'Downloading…'
-            : audioOnly
-              ? `Download Audio (${audioFormat.toUpperCase()})`
-              : quality
-                ? `Download ${quality}p`
-                : 'Download Best Quality'}
-        </button>
-
-        <div className="border-t border-neutral-800 pt-3 flex flex-col gap-2">
-          <p className="text-xs text-neutral-500">
-            Section download prototype — plain inputs for now. The real
-            drag-to-select scrubber comes in Phase 5.
-          </p>
-          <div className="flex gap-2">
-            <input
-              value={start}
-              onChange={(e) => setStart(e.target.value)}
-              placeholder="Start (sec)"
-              className="w-1/2 rounded-lg bg-neutral-900 border border-neutral-800 px-3 py-2 text-sm"
-            />
-            <input
-              value={end}
-              onChange={(e) => setEnd(e.target.value)}
-              placeholder="End (sec)"
-              className="w-1/2 rounded-lg bg-neutral-900 border border-neutral-800 px-3 py-2 text-sm"
-            />
-          </div>
+        {!isPlaylist && (
           <button
-            onClick={() => handleDownload({ start: Number(start), end: Number(end) })}
-            disabled={!url || !start || !end || downloading}
-            className="rounded-lg bg-neutral-800 hover:bg-neutral-700 disabled:opacity-50 text-sm px-4 py-2"
+            onClick={() => handleDownload(null)}
+            disabled={!url || downloading}
+            className="rounded-lg bg-emerald-500 hover:bg-emerald-400 disabled:opacity-50 text-neutral-950 font-medium px-4 py-2 text-sm"
           >
-            Download Section (prototype)
+            {downloading
+              ? 'Downloading…'
+              : audioOnly
+                ? `Download Audio (${audioFormat.toUpperCase()})`
+                : quality
+                  ? `Download ${quality}p`
+                  : 'Download Best Quality'}
           </button>
-        </div>
+        )}
+
+        {!isPlaylist && (
+          <div className="border-t border-neutral-800 pt-3 flex flex-col gap-2">
+            <p className="text-xs text-neutral-500">
+              Section download prototype — plain inputs for now. The real
+              drag-to-select scrubber comes in Phase 5.
+            </p>
+            <div className="flex gap-2">
+              <input
+                value={start}
+                onChange={(e) => setStart(e.target.value)}
+                placeholder="Start (sec)"
+                className="w-1/2 rounded-lg bg-neutral-900 border border-neutral-800 px-3 py-2 text-sm"
+              />
+              <input
+                value={end}
+                onChange={(e) => setEnd(e.target.value)}
+                placeholder="End (sec)"
+                className="w-1/2 rounded-lg bg-neutral-900 border border-neutral-800 px-3 py-2 text-sm"
+              />
+            </div>
+            <button
+              onClick={() => handleDownload({ start: Number(start), end: Number(end) })}
+              disabled={!url || !start || !end || downloading}
+              className="rounded-lg bg-neutral-800 hover:bg-neutral-700 disabled:opacity-50 text-sm px-4 py-2"
+            >
+              Download Section (prototype)
+            </button>
+          </div>
+        )}
 
         {progress && (
           <div className="w-full">

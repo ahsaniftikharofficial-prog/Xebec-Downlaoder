@@ -15,4 +15,11 @@ contextBridge.exposeInMainWorld('api', {
     ipcRenderer.on('video:downloadProgress', listener);
     return () => ipcRenderer.removeListener('video:downloadProgress', listener);
   },
+  getPlaylistInfo: (url) => ipcRenderer.invoke('playlist:getInfo', url),
+  downloadPlaylist: (options) => ipcRenderer.invoke('playlist:download', options),
+  onPlaylistItemUpdate: (callback) => {
+    const listener = (_event, update) => callback(update);
+    ipcRenderer.on('playlist:itemUpdate', listener);
+    return () => ipcRenderer.removeListener('playlist:itemUpdate', listener);
+  },
 });

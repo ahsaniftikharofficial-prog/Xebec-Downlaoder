@@ -3,6 +3,7 @@ const path = require('path');
 const { getBinPath, firstLine, runBinary } = require('./engine');
 const { getVideoInfo, downloadVideo } = require('./downloadManager');
 const { downloadThumbnail, downloadSubtitles, saveMetadata } = require('./assetManager');
+const { getPlaylistInfo, downloadPlaylist } = require('./playlistManager');
 
 const isDev = process.env.NODE_ENV === 'development';
 const projectRoot = path.join(__dirname, '..');
@@ -131,6 +132,36 @@ ipcMain.handle('metadata:save', async (_event, options) => {
     id: options.info?.id,
     format: options.format || 'json',
     info: options.info,
+  });
+});
+
+ipcMain.handle('playlist:getInfo', async (_event, url) => {
+  const ytDlpPath = getBinPath(resourcesRoot(), isDev, 'yt-dlp.exe');
+  return getPlaylistInfo(ytDlpPath, url);
+});
+
+// options: { items, quality, format, audioOnly, audioFormat }
+// items is the checklist selection: [{ id, url, title }, ...]
+ipcMain.handle('playlist:download', async (_event, options) => {
+  const root = resourcesRoot();
+  const ytDlpPath = getBinPath(root, isDev, 'yt-dlp.exe');
+  const ffprobePath = getBinPath(root, isDev, 'ffprobe.exe');
+  const ffmpegDir = path.dirname(getBinPath(root, isDev, 'ffmpeg.exe'));
+  const downloadsDir = app.getPath('downloads');
+
+  return downloadPlaylist({
+    ytDlpPath,
+    ffprobePath,
+    ffmpegDir,
+    downloadsDir,
+    items: options.items,
+    quality: options.quality || null,
+    format: options.format || null,
+    audioOnly: Boolean(options.audioOnly),
+    audioFormat: options.audioFormat || null,
+    onItemUpdate: (id, update) => {
+      if (mainWindow) mainWindow.webContents.send('playlist:itemUpdate', { id, ...update });
+    },
   });
 });
 

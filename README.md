@@ -1,104 +1,109 @@
-# YT Downloader — Phase 3
+# YT Downloader — Phase 4
 
-Thumbnails, subtitles, and metadata — three independent one-click saves
-that sit alongside the video download, each verified on its own so a
-failure in one can never take another down with it.
+Playlist support — paste a playlist link and get a checklist of every
+video in it instead of a single video card. Pick which ones you want,
+hit one button, and they download one at a time with their own progress
+bar each. If one video in the batch is broken (private, deleted,
+region-locked, whatever), it's marked failed and the rest of the
+playlist keeps going.
 
-## Setup (skip if you already did this for Phase 1/2)
+## Setup (skip if you already did this for Phase 1/2/3)
 
 1. `npm install` — installs all dependencies
 2. `npm run setup` — one-time ffmpeg download (skips if already present)
 3. `npm run dev` — opens the app window
 
-## What's new in Phase 3
+## What's new in Phase 4
 
-After **Get Info**, three new boxes appear below the video download
-controls:
+Paste a playlist URL (a `youtube.com/playlist?list=...` link, or a
+`watch?v=...&list=...` link) and click **Get Info** like always. Instead
+of the single-video card, you'll see:
 
-- **Thumbnail** — a preview image, a dropdown listing every resolution
-  this specific video's thumbnail actually comes in (largest marked
-  "Best"), and a JPG/PNG format choice. **Save Thumbnail** fetches the
-  chosen image and always runs it through ffmpeg to guarantee the file
-  that lands on disk really is the format you picked — the same
-  belt-and-suspenders approach Phase 2 uses for video containers.
-- **Subtitles** — every subtitle track this video has, manual and
-  auto-generated, with auto-generated ones labeled as such (if a language
-  has both, only the higher-quality manual one is shown). Check as many
-  as you want, pick SRT or VTT, and **Save Subtitles** saves all of them
-  in one pass. Because yt-dlp doesn't treat a missing language as an
-  error, the result is checked language-by-language against what actually
-  landed in the downloads folder, and any that weren't available are
-  called out — not silently dropped.
-- **Metadata** — channel, upload date, and description are shown right in
-  the box; **Save Metadata** writes them (plus title, duration, and the
-  video URL) to a JSON or TXT file.
+- **A checklist** — every video in the playlist, with its length, and a
+  **Select all** checkbox at the top. Everything is checked by default;
+  uncheck the ones you don't want.
+- **Download Selected** — starts downloading the checked videos, one at a
+  time, at best available quality (MP4). There's no per-video quality/
+  format picker for playlists yet — that's a possible follow-up, not part
+  of this phase.
+- **A progress section** — one overall bar (X of Y processed), and a row
+  per video showing "Waiting…", a live percentage while it's downloading,
+  a green check when done, or a red X with the actual error message if
+  that one failed. A failed video never stops the others — it's marked
+  and the queue moves straight to the next one.
 
-All three save to the same downloads folder as the video, named
-`<title> [<id>] - thumbnail.<ext>` / `- metadata.<ext>`, and none of them
-touch the main **Download** button's flow — you can save a thumbnail
-without ever downloading the video itself.
+Regular single-video links work exactly as before — nothing about
+Phases 1–3 changed. The one small behavior change: if the URL you've
+pasted is a playlist link, the old single-video **Download Best Quality**
+button and the section-download prototype are hidden, since running
+those against a whole playlist wouldn't produce one sensible file to
+verify. They come back the moment you clear the URL or paste a normal
+video link.
+
+Under the hood, each playlist video is downloaded through the exact same
+verified-download + resume logic Phase 1 built for single videos — a
+playlist item is just a video, downloaded the same way, one after
+another (not all at once — gentler on YouTube and simpler to reason
+about).
 
 ## What I could and couldn't test from here
 
-I ran the full automated suite — 73 tests, all passing (`npm test`) — and
-additionally, since this sandbox happens to have ffmpeg installed, I
-generated a synthetic test image and ran it through the actual conversion
-+ verification code path (not a mock): ffmpeg converted a
-1280×720 WEBP to JPG, and the verification step correctly read back
-`{ width: 1280, height: 720 }` via ffprobe. So the thumbnail pipeline's
-conversion and verification logic is confirmed working, not just unit
-tested in isolation.
+I ran the full automated suite — 85 tests now (73 from before + 12 new
+ones for this phase), all passing (`npm test`). The new tests cover the
+logic that matters most for this phase: recognizing a playlist URL,
+turning yt-dlp's playlist listing into a clean checklist (including
+dropping entries with no usable id, like a deleted video), and — the
+important one — the queue running every item even when one of them
+fails, confirmed with a fake failing download so it doesn't depend on a
+real playlist.
 
-What I could **not** do from this build environment: fetch a real
-thumbnail from YouTube's CDN (this sandbox's network is locked to package
-registries only) or run yt-dlp against a real video for subtitles. Before
+What I could **not** do from this sandbox: fetch a real playlist listing
+from YouTube (this environment's network only reaches package
+registries, not youtube.com) or actually download any videos. Before
 this phase counts as done, please test on your machine:
 
-1. Paste a URL → Get Info → confirm the Thumbnail box shows a preview and
-   the resolution dropdown lists sizes that make sense for that video
-2. Save Thumbnail as JPG, then again as PNG — confirm both files open and
-   are genuinely that format (not just renamed)
-3. Pick a couple of subtitle languages (include an auto-generated one if
-   the video has one) → Save Subtitles → confirm the right number of
-   `.srt` or `.vtt` files land in your downloads folder and open correctly
-4. Try a video you know has **no** subtitles at all — confirm the box
-   says so instead of showing an empty, clickable list
-5. Save Metadata as JSON, then TXT — confirm both open and the channel /
-   date / duration / description look right compared to the video's real
-   YouTube page
+1. Paste a playlist link → Get Info → confirm the checklist shows every
+   video with a sensible title and length, and Select all/individual
+   checkboxes work
+2. Uncheck a couple of videos → Download Selected → confirm only the
+   checked ones download, one at a time, with a live percentage per row
+3. Confirm the overall progress bar and the "X succeeded, Y failed" line
+   update correctly as the batch runs
+4. If you know a playlist with a private or deleted video in it, include
+   it in your selection — confirm it shows a red X with a message
+   instead of stopping the rest of the batch
+5. Paste a plain single-video link (no playlist) right after — confirm
+   the normal Phase 1–3 flow still looks and works exactly the same
 
 If anything errors, paste the exact message into your next Claude chat.
 
 ## Running the automated tests
 
-`npm test` — runs Vitest. Should show 73 tests passing, no window needed.
+`npm test` — runs Vitest. Should show 85 tests passing, no window needed.
 
 ## Troubleshooting
 
-- **Thumbnail dropdown only shows one size** — some videos only expose
-  one thumbnail; that's expected, not a bug.
-- **Save Thumbnail fails** — make sure `resources/bin/ffmpeg.exe` and
-  `ffprobe.exe` are both present (same fix as Phase 1/2: delete them and
-  run `npm run setup` again). If it still fails, paste the exact error
-  and the video URL into your next Claude chat.
-- **A subtitle language I expected is missing after saving** — YouTube
-  doesn't have every language for every video; check the video's own
-  "cc" menu on youtube.com to confirm it's really there before assuming
-  it's a bug. If it *is* there but didn't save, paste the language code
-  and video URL into your next Claude chat.
-- **Metadata description looks truncated or missing** — some videos have
-  no description at all; the saved file will say so rather than being
-  blank/broken.
-- Phase 1/2's troubleshooting entries (engine check, section download,
-  quality/format selection, verification) still apply unchanged.
+- **Checklist is empty or missing videos** — some playlists mix in
+  private/deleted videos; those are dropped automatically since they'd
+  never download successfully anyway. If a video you know is public is
+  missing, paste the playlist URL into your next Claude chat.
+- **A video in the queue always fails** — private, deleted,
+  region-locked, and age-restricted videos will fail here the same way
+  they'd fail a direct download; that's expected, not a bug in the queue
+  itself.
+- **Download Best Quality button disappeared** — that's expected once
+  the URL box contains a playlist link (see "What's new" above); it's
+  not gone, just hidden for playlist URLs.
+- Phase 1/2/3's troubleshooting entries (engine check, section download,
+  quality/format selection, verified downloads, thumbnails/subtitles/
+  metadata) still apply unchanged.
 
 ## Next session
 
-Once you've confirmed thumbnail, subtitles, and metadata all save and
-verify correctly on your machine, open the project plan file, update
-**Current Status** to Phase 4, and start a new chat.
+Once you've confirmed the checklist, queue, and failure isolation all
+work correctly on your machine, open the project plan file, update
+**Current Status** to Phase 5, and start a new chat.
 
-(Note: the Plan.md you're tracking status in was still showing "Phase 0 —
-Not started" when this phase was written — this README and the code are
-the source of truth for what's actually built. Worth updating Plan.md's
-Current Status to match reality once you confirm this phase.)
+(Same note as last phase: keep Plan.md's Current Status in sync as you
+go — this README documents what's actually built at each phase, and is
+the most reliable source if the two ever disagree.)
