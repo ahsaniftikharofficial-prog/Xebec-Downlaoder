@@ -22,4 +22,15 @@ contextBridge.exposeInMainWorld('api', {
     ipcRenderer.on('playlist:itemUpdate', listener);
     return () => ipcRenderer.removeListener('playlist:itemUpdate', listener);
   },
+  getSettings: () => ipcRenderer.invoke('settings:get'),
+  setSettings: (updates) => ipcRenderer.invoke('settings:set', updates),
+  chooseDownloadFolder: () => ipcRenderer.invoke('settings:chooseFolder'),
+  getHistory: () => ipcRenderer.invoke('history:list'),
+  clearHistory: () => ipcRenderer.invoke('history:clear'),
+  openHistoryFile: (filePath) => ipcRenderer.invoke('history:openFile', filePath),
+  onClipboardDetected: (callback) => {
+    const listener = (_event, text) => callback(text);
+    ipcRenderer.on('clipboard:detected', listener);
+    return () => ipcRenderer.removeListener('clipboard:detected', listener);
+  },
 });

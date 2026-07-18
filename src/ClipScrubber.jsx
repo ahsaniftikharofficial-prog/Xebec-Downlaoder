@@ -1,12 +1,14 @@
 import { useEffect, useRef, useState } from 'react';
 import { moveClipHandle } from './clip';
+import { ACCENT_THEMES } from './theme';
 
 // A draggable dual-handle range scrubber for picking a start/end clip range
 // out of a video's full duration. Pointer Events cover mouse and touch with
 // one set of handlers, so no drag library is needed for two handles on one
 // axis. Window-level listeners (attached only while actually dragging) mean
 // a fast drag off the small handle itself doesn't lose the drag.
-export default function ClipScrubber({ duration, start, end, onChange }) {
+export default function ClipScrubber({ duration, start, end, onChange, accent }) {
+  const theme = accent || ACCENT_THEMES.emerald;
   const trackRef = useRef(null);
   const [dragging, setDragging] = useState(null); // 'start' | 'end' | null
 
@@ -44,7 +46,7 @@ export default function ClipScrubber({ duration, start, end, onChange }) {
   return (
     <div ref={trackRef} className="relative h-2 rounded-full bg-neutral-800 mt-3 mb-4 select-none">
       <div
-        className="absolute h-full bg-emerald-500 rounded-full pointer-events-none"
+        className={`absolute h-full ${theme.fill} rounded-full pointer-events-none`}
         style={{
           left: `${percentFor(start)}%`,
           width: `${Math.max(0, percentFor(end) - percentFor(start))}%`,
@@ -52,12 +54,12 @@ export default function ClipScrubber({ duration, start, end, onChange }) {
       />
       <div
         onPointerDown={() => setDragging('start')}
-        className="absolute top-1/2 w-4 h-4 rounded-full bg-neutral-100 border-2 border-emerald-500 cursor-grab active:cursor-grabbing"
+        className={`absolute top-1/2 w-4 h-4 rounded-full bg-neutral-100 border-2 ${theme.border} cursor-grab active:cursor-grabbing`}
         style={{ left: `${percentFor(start)}%`, transform: 'translate(-50%, -50%)' }}
       />
       <div
         onPointerDown={() => setDragging('end')}
-        className="absolute top-1/2 w-4 h-4 rounded-full bg-neutral-100 border-2 border-emerald-500 cursor-grab active:cursor-grabbing"
+        className={`absolute top-1/2 w-4 h-4 rounded-full bg-neutral-100 border-2 ${theme.border} cursor-grab active:cursor-grabbing`}
         style={{ left: `${percentFor(end)}%`, transform: 'translate(-50%, -50%)' }}
       />
     </div>

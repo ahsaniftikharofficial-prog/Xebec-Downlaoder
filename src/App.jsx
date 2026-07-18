@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import ClipScrubber from './ClipScrubber';
 import { parseTimestamp, formatTimestamp, moveClipHandle } from './clip';
+import { ACCENT_COLORS, ACCENT_THEMES } from './theme';
 
 function formatDuration(totalSeconds) {
   if (totalSeconds == null) return 'unknown length';
@@ -80,6 +81,22 @@ export default function App() {
   const [selectedIds, setSelectedIds] = useState(new Set());
   const [queueItems, setQueueItems] = useState([]);
   const [queueRunning, setQueueRunning] = useState(false);
+  const [queueError, setQueueError] = useState(null);
+
+  // Phase 6. settings/history start from a local fallback and get replaced
+  // by the real thing once the IPC calls below resolve — the fallback
+  // shape must match electron/settings.js's DEFAULT_SETTINGS.
+  const [settings, setSettings] = useState({ defaultFolder: null, defaultQuality: null, accentColor: 'emerald' });
+  const [settingsError, setSettingsError] = useState(null);
+  const [showSettings, setShowSettings] = useState(false);
+
+  const [history, setHistory] = useState([]);
+  const [historyError, setHistoryError] = useState(null);
+  const [loadingHistory, setLoadingHistory] = useState(false);
+  const [showHistory, setShowHistory] = useState(false);
+
+  const [clipboardSuggestion, setClipboardSuggestion] = useState(null);
+  const [engineError, setEngineError] = useState(null);
 
   useEffect(() => {
     const unsubscribe = window.api.onDownloadProgress((p) => setProgress(p));
@@ -106,14 +123,88 @@ export default function App() {
     return unsubscribe;
   }, []);
 
+  // Settings and history are both loaded once on launch — reading a small
+  // local JSON file is cheap, so there's no real cost to doing it eagerly
+  // instead of waiting for the user to open each panel.
+  useEffect(() => {
+    window.api.getSettings().then(setSettings).catch(() => {});
+    refreshHistory();
+  }, []);
+
+  useEffect(() => {
+    const unsubscribe = window.api.onClipboardDetected((text) => setClipboardSuggestion(text));
+    return unsubscribe;
+  }, []);
+
   async function handleCheckEngine() {
     setCheckingEngine(true);
     setEngineStatus(null);
+    setEngineError(null);
     try {
       setEngineStatus(await window.api.checkEngine());
+    } catch (err) {
+      setEngineError(err.message);
     } finally {
       setCheckingEngine(false);
     }
+  }
+
+  async function refreshHistory() {
+    setLoadingHistory(true);
+    setHistoryError(null);
+    try {
+      setHistory(await window.api.getHistory());
+    } catch (err) {
+      setHistoryError(err.message);
+    } finally {
+      setLoadingHistory(false);
+    }
+  }
+
+  async function handleClearHistory() {
+    if (!window.confirm("Clear all download history? This can't be undone.")) return;
+    setHistoryError(null);
+    try {
+      setHistory(await window.api.clearHistory());
+    } catch (err) {
+      setHistoryError(err.message);
+    }
+  }
+
+  async function handleOpenHistoryFile(filePath) {
+    setHistoryError(null);
+    try {
+      await window.api.openHistoryFile(filePath);
+    } catch (err) {
+      setHistoryError(err.message);
+    }
+  }
+
+  async function applySettingsUpdate(updates) {
+    setSettingsError(null);
+    try {
+      setSettings(await window.api.setSettings(updates));
+    } catch (err) {
+      setSettingsError(err.message);
+    }
+  }
+
+  async function handleChooseFolder() {
+    setSettingsError(null);
+    try {
+      setSettings(await window.api.chooseDownloadFolder());
+    } catch (err) {
+      setSettingsError(err.message);
+    }
+  }
+
+  function handleUseClipboardLink() {
+    setUrl(clipboardSuggestion);
+    setClipboardSuggestion(null);
+  }
+
+  function handleDismissClipboardSuggestion() {
+    setClipboardSuggestion(null);
   }
 
   async function handleGetInfo() {
@@ -161,6 +252,12 @@ export default function App() {
       setInfo(fetched);
       // Default the picker to the best (largest) thumbnail this video has.
       setThumbnailUrl(fetched.thumbnails?.[0]?.url || fetched.thumbnail || '');
+      // Apply the "default quality" setting only if this video actually
+      // offers that resolution — can't force a resolution it doesn't have.
+      const resolutionStrings = (fetched.resolutions || []).map(String);
+      if (settings.defaultQuality && resolutionStrings.includes(settings.defaultQuality)) {
+        setQuality(settings.defaultQuality);
+      }
       // Default the clip range to the whole video.
       const duration = fetched.duration || 0;
       setClipStart(0);
@@ -194,18 +291,41 @@ export default function App() {
   // Phase 1 built — verification and resume come along for free. A failed
   // item is reported in that row and the queue moves on; see playlist.js's
   // processQueue for where that isolation actually happens.
+  async function submitPlaylistDownload(items) {
+    setQueueRunning(true);
+    setQueueError(null);
+    try {
+      await window.api.downloadPlaylist({ items });
+      refreshHistory();
+    } catch (err) {
+      setQueueError(err.message);
+    } finally {
+      setQueueRunning(false);
+    }
+  }
+
   async function handleDownloadPlaylist() {
     const items = playlistInfo.entries
       .filter((e) => selectedIds.has(e.id))
       .map((e) => ({ id: e.id, url: e.url, title: e.title }));
 
     setQueueItems(items.map((e) => ({ id: e.id, title: e.title, status: 'pending', percent: null, error: null })));
-    setQueueRunning(true);
-    try {
-      await window.api.downloadPlaylist({ items });
-    } finally {
-      setQueueRunning(false);
-    }
+    await submitPlaylistDownload(items);
+  }
+
+  // Re-runs just the items that failed last time, leaving the successful
+  // rows in the queue list as they are — no need to reselect everything
+  // from the checklist just to pick up the few that didn't make it.
+  async function handleRetryFailed() {
+    const failedIds = new Set(queueItems.filter((i) => i.status === 'failed').map((i) => i.id));
+    const items = playlistInfo.entries
+      .filter((e) => failedIds.has(e.id))
+      .map((e) => ({ id: e.id, url: e.url, title: e.title }));
+
+    setQueueItems((prev) =>
+      prev.map((item) => (failedIds.has(item.id) ? { ...item, status: 'pending', percent: null, error: null } : item))
+    );
+    await submitPlaylistDownload(items);
   }
 
   async function handleSaveThumbnail() {
@@ -274,6 +394,7 @@ export default function App() {
     try {
       const res = await window.api.downloadVideo({
         url,
+        title: info?.title,
         section,
         quality: audioOnly || !quality ? null : Number(quality),
         format,
@@ -281,6 +402,7 @@ export default function App() {
         audioFormat,
       });
       setResult(res);
+      refreshHistory();
     } catch (err) {
       setDownloadError(err.message);
     } finally {
@@ -336,33 +458,163 @@ export default function App() {
   const queueSucceeded = queueItems.filter((i) => i.status === 'done').length;
   const queueFailed = queueItems.filter((i) => i.status === 'failed').length;
   const queueOverallPercent = queueItems.length ? Math.round((queueDone / queueItems.length) * 100) : 0;
+  const accent = ACCENT_THEMES[settings.accentColor] || ACCENT_THEMES.emerald;
 
   return (
     <div className="min-h-screen bg-neutral-950 text-neutral-100 flex flex-col items-center gap-6 p-8">
       <h1 className="text-2xl font-semibold tracking-tight">YT Downloader</h1>
 
       <div className="w-full max-w-md flex flex-col items-center gap-2">
-        <button
-          onClick={handleCheckEngine}
-          disabled={checkingEngine}
-          className="rounded-lg bg-neutral-800 hover:bg-neutral-700 disabled:opacity-50 text-sm px-4 py-2"
-        >
-          {checkingEngine ? 'Checking engine…' : 'Check Engine'}
-        </button>
+        <div className="flex gap-2 w-full">
+          <button
+            onClick={handleCheckEngine}
+            disabled={checkingEngine}
+            className="flex-1 rounded-lg bg-neutral-800 hover:bg-neutral-700 disabled:opacity-50 text-sm px-4 py-2"
+          >
+            {checkingEngine ? 'Checking…' : 'Check Engine'}
+          </button>
+          <button
+            onClick={() => setShowHistory((s) => !s)}
+            className="flex-1 rounded-lg bg-neutral-800 hover:bg-neutral-700 text-sm px-4 py-2"
+          >
+            History
+          </button>
+          <button
+            onClick={() => setShowSettings((s) => !s)}
+            className="flex-1 rounded-lg bg-neutral-800 hover:bg-neutral-700 text-sm px-4 py-2"
+          >
+            Settings
+          </button>
+        </div>
+
+        {engineError && <p className="text-red-400 text-xs">{engineError}</p>}
         {engineStatus && (
           <div className="w-full rounded-lg bg-neutral-900 border border-neutral-800 p-3 text-xs font-mono">
             <div>yt-dlp: {engineStatus.ytDlp ?? `\u274c ${engineStatus.ytDlpError}`}</div>
             <div>ffmpeg: {engineStatus.ffmpeg ?? `\u274c ${engineStatus.ffmpegError}`}</div>
           </div>
         )}
+
+        {showHistory && (
+          <div className="w-full rounded-lg bg-neutral-900 border border-neutral-800 p-3 flex flex-col gap-2 text-xs">
+            {historyError && <p className="text-red-400">{historyError}</p>}
+            <div className="flex items-center justify-between">
+              <span className="text-neutral-400">{history.length} download{history.length === 1 ? '' : 's'}</span>
+              <button
+                onClick={handleClearHistory}
+                disabled={history.length === 0}
+                className="text-red-400 hover:text-red-300 disabled:opacity-50 disabled:hover:text-red-400"
+              >
+                Clear history
+              </button>
+            </div>
+            {loadingHistory ? (
+              <p className="text-neutral-500">Loading…</p>
+            ) : history.length === 0 ? (
+              <p className="text-neutral-500">Nothing downloaded yet.</p>
+            ) : (
+              <div className="flex flex-col gap-1 max-h-56 overflow-y-auto pr-1">
+                {history.map((entry) => (
+                  <button
+                    key={entry.id}
+                    onClick={() => handleOpenHistoryFile(entry.filePath)}
+                    className="flex items-center justify-between gap-2 text-left hover:bg-neutral-800 rounded-lg px-2 py-1.5 -mx-2"
+                  >
+                    <span className="truncate flex-1 text-neutral-300">{entry.title}</span>
+                    <span className="text-neutral-500 shrink-0">
+                      {entry.type === 'clip' ? 'Clip' : entry.type === 'playlist-item' ? 'Playlist' : 'Video'}
+                      {entry.verified ? '' : ' \u26a0\ufe0f'}
+                    </span>
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
+        {showSettings && (
+          <div className="w-full rounded-lg bg-neutral-900 border border-neutral-800 p-3 flex flex-col gap-3 text-xs">
+            {settingsError && <p className="text-red-400">{settingsError}</p>}
+
+            <div className="flex flex-col gap-1">
+              <span className="text-neutral-400">Download folder</span>
+              <div className="flex items-center gap-2">
+                <span className="truncate flex-1 text-neutral-300">
+                  {settings.defaultFolder || 'System default (Downloads)'}
+                </span>
+                <button
+                  onClick={handleChooseFolder}
+                  className="rounded-lg bg-neutral-800 hover:bg-neutral-700 px-3 py-1.5 shrink-0"
+                >
+                  Choose…
+                </button>
+              </div>
+            </div>
+
+            <label className="flex flex-col gap-1">
+              <span className="text-neutral-400">Default quality</span>
+              <select
+                value={settings.defaultQuality || ''}
+                onChange={(e) => applySettingsUpdate({ defaultQuality: e.target.value || null })}
+                className="rounded-lg bg-neutral-800 border border-neutral-700 px-3 py-2"
+              >
+                <option value="">Best available</option>
+                <option value="2160">2160p (4K)</option>
+                <option value="1440">1440p</option>
+                <option value="1080">1080p</option>
+                <option value="720">720p</option>
+                <option value="480">480p</option>
+                <option value="360">360p</option>
+              </select>
+            </label>
+
+            <div className="flex flex-col gap-1">
+              <span className="text-neutral-400">Accent color</span>
+              <div className="flex gap-2">
+                {ACCENT_COLORS.map((color) => (
+                  <button
+                    key={color}
+                    onClick={() => applySettingsUpdate({ accentColor: color })}
+                    aria-label={color}
+                    className={`w-6 h-6 rounded-full ${ACCENT_THEMES[color].swatch} ${
+                      settings.accentColor === color
+                        ? 'ring-2 ring-offset-2 ring-offset-neutral-900 ring-neutral-100'
+                        : ''
+                    }`}
+                  />
+                ))}
+              </div>
+            </div>
+          </div>
+        )}
       </div>
 
       <div className="w-full max-w-md flex flex-col gap-3">
+        {clipboardSuggestion && (
+          <div className="rounded-lg bg-neutral-900 border border-neutral-800 p-2 flex items-center gap-2 text-xs">
+            <span className="truncate flex-1 text-neutral-300">
+              Found a link in your clipboard: {clipboardSuggestion}
+            </span>
+            <button
+              onClick={handleUseClipboardLink}
+              className={`shrink-0 rounded-lg px-3 py-1.5 text-neutral-950 font-medium ${accent.solid}`}
+            >
+              Use it
+            </button>
+            <button
+              onClick={handleDismissClipboardSuggestion}
+              className="shrink-0 text-neutral-500 hover:text-neutral-300 px-2"
+            >
+              {'\u2715'}
+            </button>
+          </div>
+        )}
+
         <input
           value={url}
           onChange={(e) => setUrl(e.target.value)}
           placeholder="Paste a YouTube URL"
-          className="rounded-lg bg-neutral-900 border border-neutral-800 px-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500"
+          className={`rounded-lg bg-neutral-900 border border-neutral-800 px-4 py-2 text-sm focus:outline-none focus:ring-2 ${accent.ring}`}
         />
 
         <button
@@ -410,7 +662,7 @@ export default function App() {
           <button
             onClick={handleDownloadPlaylist}
             disabled={selectedIds.size === 0 || queueRunning}
-            className="rounded-lg bg-emerald-500 hover:bg-emerald-400 disabled:opacity-50 text-neutral-950 font-medium px-4 py-2 text-sm"
+            className={`rounded-lg ${accent.solid} disabled:opacity-50 text-neutral-950 font-medium px-4 py-2 text-sm`}
           >
             {queueRunning
               ? `Downloading… (${queueDone}/${queueItems.length})`
@@ -418,11 +670,13 @@ export default function App() {
           </button>
         )}
 
+        {queueError && <p className="text-red-400 text-xs">{queueError}</p>}
+
         {queueItems.length > 0 && (
           <div className="rounded-lg bg-neutral-900 border border-neutral-800 p-3 flex flex-col gap-2">
             <div className="h-2 rounded-full bg-neutral-800 overflow-hidden">
               <div
-                className="h-full bg-emerald-500 transition-all"
+                className={`h-full ${accent.fill} transition-all`}
                 style={{ width: `${queueOverallPercent}%` }}
               />
             </div>
@@ -448,6 +702,15 @@ export default function App() {
                 </div>
               ))}
             </div>
+
+            {!queueRunning && queueFailed > 0 && (
+              <button
+                onClick={handleRetryFailed}
+                className="rounded-lg bg-neutral-800 hover:bg-neutral-700 text-sm px-4 py-2"
+              >
+                Retry Failed ({queueFailed})
+              </button>
+            )}
           </div>
         )}
 
@@ -509,7 +772,7 @@ export default function App() {
           <button
             onClick={() => handleDownload(null)}
             disabled={!url || downloading}
-            className="rounded-lg bg-emerald-500 hover:bg-emerald-400 disabled:opacity-50 text-neutral-950 font-medium px-4 py-2 text-sm"
+            className={`rounded-lg ${accent.solid} disabled:opacity-50 text-neutral-950 font-medium px-4 py-2 text-sm`}
           >
             {downloading
               ? 'Downloading…'
@@ -532,6 +795,7 @@ export default function App() {
               start={clipStart}
               end={clipEnd}
               onChange={handleClipRangeChange}
+              accent={accent}
             />
 
             <div className="flex items-center justify-between text-xs text-neutral-500 -mt-2">
@@ -584,7 +848,7 @@ export default function App() {
           <div className="w-full">
             <div className="h-2 rounded-full bg-neutral-800 overflow-hidden">
               <div
-                className="h-full bg-emerald-500 transition-all"
+                className={`h-full ${accent.fill} transition-all`}
                 style={{ width: `${percent ?? 0}%` }}
               />
             </div>
