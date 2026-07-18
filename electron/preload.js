@@ -33,4 +33,12 @@ contextBridge.exposeInMainWorld('api', {
     ipcRenderer.on('clipboard:detected', listener);
     return () => ipcRenderer.removeListener('clipboard:detected', listener);
   },
+  getEngineUpdateStatus: () => ipcRenderer.invoke('engine:updateStatus'),
+  acknowledgeEngineUpdate: (binary) => ipcRenderer.invoke('engine:acknowledgeUpdate', binary),
+  rollbackEngine: (binary) => ipcRenderer.invoke('engine:rollback', binary),
+  onEngineUpdated: (callback) => {
+    const listener = (_event, result) => callback(result);
+    ipcRenderer.on('engine:updated', listener);
+    return () => ipcRenderer.removeListener('engine:updated', listener);
+  },
 });

@@ -1,6 +1,6 @@
 import path from 'path';
 import { describe, it, expect } from 'vitest';
-import { getBinPath, firstLine } from './engine.js';
+import { getBinPath, firstLine, getWritableBinDir, getWritableBinPath, getVersionsDir } from './engine.js';
 
 describe('getBinPath', () => {
   it('points inside resources/bin when running in dev', () => {
@@ -13,6 +13,23 @@ describe('getBinPath', () => {
     const result = getBinPath('/packaged/resources', false, 'ffmpeg.exe');
     const expected = path.join('/packaged/resources', 'bin', 'ffmpeg.exe');
     expect(result).toBe(expected);
+  });
+});
+
+describe('getWritableBinDir / getWritableBinPath', () => {
+  it('points inside userData/engine/bin, never inside the app install dir', () => {
+    const userData = path.join('/Users', 'me', 'AppData', 'Roaming', 'yt-downloader');
+    expect(getWritableBinDir(userData)).toBe(path.join(userData, 'engine', 'bin'));
+    expect(getWritableBinPath(userData, 'yt-dlp.exe')).toBe(
+      path.join(userData, 'engine', 'bin', 'yt-dlp.exe')
+    );
+  });
+});
+
+describe('getVersionsDir', () => {
+  it('points inside userData/engine/versions', () => {
+    const userData = path.join('/Users', 'me', 'AppData', 'Roaming', 'yt-downloader');
+    expect(getVersionsDir(userData)).toBe(path.join(userData, 'engine', 'versions'));
   });
 });
 

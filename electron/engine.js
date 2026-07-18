@@ -46,4 +46,33 @@ function runBinary(binPath, args) {
   });
 }
 
-module.exports = { getBinPath, firstLine, runBinary };
+// Phase 7: self-healing needs somewhere to WRITE updated binaries, and a
+// packaged Windows app's own resources folder is often installed under
+// Program Files, which isn't reliably writable without admin rights. So
+// from Phase 7 onward, the binaries actually used at runtime live in a
+// writable copy under Electron's per-user userData folder instead — the
+// bundled originals (found via getBinPath above) are only ever read once,
+// to seed that writable copy the first time, and are never modified.
+function getWritableBinDir(userDataPath) {
+  return path.join(userDataPath, 'engine', 'bin');
+}
+
+function getWritableBinPath(userDataPath, binName) {
+  return path.join(getWritableBinDir(userDataPath), binName);
+}
+
+// Previous versions of a binary are copied here before it gets replaced by
+// an update, so a bad update can be rolled back instead of just hoping the
+// new one works.
+function getVersionsDir(userDataPath) {
+  return path.join(userDataPath, 'engine', 'versions');
+}
+
+module.exports = {
+  getBinPath,
+  firstLine,
+  runBinary,
+  getWritableBinDir,
+  getWritableBinPath,
+  getVersionsDir,
+};

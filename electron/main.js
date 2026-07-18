@@ -2,7 +2,7 @@ const { app, BrowserWindow, ipcMain, clipboard, dialog, shell } = require('elect
 const path = require('path');
 const fs = require('fs');
 const { randomUUID } = require('crypto');
-const { getBinPath, firstLine, runBinary } = require('./engine');
+const { firstLine, runBinary } = require('./engine');
 const { getVideoInfo, downloadVideo } = require('./downloadManager');
 const { downloadThumbnail, downloadSubtitles, saveMetadata } = require('./assetManager');
 const { getPlaylistInfo, downloadPlaylist } = require('./playlistManager');
@@ -10,6 +10,14 @@ const { readHistory, addToHistory, clearHistory } = require('./historyManager');
 const { buildHistoryEntry } = require('./history');
 const { readSettings, updateSettings } = require('./settingsManager');
 const { isYouTubeUrl } = require('./clipboard');
+const {
+  ensureEngineBinary,
+  readEngineMetadata,
+  checkAndUpdateEngine,
+  rollbackYtDlp,
+  rollbackFfmpeg,
+  acknowledgeEngineUpdate,
+} = require('./updaterManager');
 
 const isDev = process.env.NODE_ENV === 'development';
 const projectRoot = path.join(__dirname, '..');
@@ -29,6 +37,56 @@ const historyFilePath = path.join(app.getPath('userData'), 'history.json');
 async function getDownloadsDir() {
   const settings = await readSettings(settingsFilePath);
   return settings.defaultFolder || app.getPath('downloads');
+}
+
+// Phase 7: every place that needs yt-dlp/ffmpeg now goes through this
+// instead of calling getBinPath directly — it resolves to the writable,
+// self-updating copy (seeding it from the bundled original the first
+// time it's needed), never the read-only copy inside the app install.
+async function enginePaths() {
+  const userDataPath = app.getPath('userData');
+  const root = resourcesRoot();
+  const ytDlpPath = await ensureEngineBinary(userDataPath, root, isDev, 'yt-dlp.exe');
+  const ffmpegPath = await ensureEngineBinary(userDataPath, root, isDev, 'ffmpeg.exe');
+  const ffprobePath = await ensureEngineBinary(userDataPath, root, isDev, 'ffprobe.exe');
+  return { ytDlpPath, ffmpegPath, ffprobePath, ffmpegDir: path.dirname(ffmpegPath) };
+}
+
+// Sends an IPC event once the window has actually finished loading and
+// registered its listeners — sending earlier (e.g. mid self-heal check
+// racing the page load) would fire into empty air with nothing listening.
+function sendToRenderer(channel, payload) {
+  if (!mainWindow) return;
+  if (mainWindow.webContents.isLoading()) {
+    mainWindow.webContents.once('did-finish-load', () => {
+      if (mainWindow) mainWindow.webContents.send(channel, payload);
+    });
+  } else {
+    mainWindow.webContents.send(channel, payload);
+  }
+}
+
+// Runs once per launch, in the background, after the window is already
+// open — never awaited before createWindow, so no internet or a down
+// GitHub can never delay the app opening. yt-dlp and ffmpeg are checked
+// independently inside checkAndUpdateEngine, so one failing never blocks
+// the other. Only sends an event to the UI when something actually
+// changed; a "nothing to update" check is silent, on purpose.
+async function runEngineSelfHeal() {
+  try {
+    const result = await checkAndUpdateEngine({
+      userDataPath: app.getPath('userData'),
+      resourcesRoot: resourcesRoot(),
+      isDev,
+    });
+    if (result.ytDlp.updated || result.ffmpeg.updated) {
+      sendToRenderer('engine:updated', result);
+    }
+  } catch (err) {
+    // Self-heal is a background nicety, not something that should ever
+    // crash the app or interrupt whatever the user is doing.
+    console.error('Engine self-heal check failed:', err.message);
+  }
 }
 
 // Checked on launch and whenever the window regains focus (the moment
@@ -74,22 +132,30 @@ function createWindow() {
   mainWindow.on('focus', checkClipboardForYouTubeLink);
 }
 
-// Phase 0's one real feature: prove the app can find and run the bundled
-// yt-dlp and ffmpeg binaries, and report back what it found.
+// Reports the versions of the binaries the app is actually running right
+// now — from Phase 7 onward that's the writable, self-updating copy, not
+// the one shipped with the installer, so this reflects any update that's
+// happened since install.
 ipcMain.handle('engine:check', async () => {
-  const root = resourcesRoot();
   const result = {};
+  let paths;
 
   try {
-    const ytDlpPath = getBinPath(root, isDev, 'yt-dlp.exe');
-    result.ytDlp = await runBinary(ytDlpPath, ['--version']);
+    paths = await enginePaths();
+  } catch (err) {
+    result.ytDlpError = err.message;
+    result.ffmpegError = err.message;
+    return result;
+  }
+
+  try {
+    result.ytDlp = await runBinary(paths.ytDlpPath, ['--version']);
   } catch (err) {
     result.ytDlpError = err.message;
   }
 
   try {
-    const ffmpegPath = getBinPath(root, isDev, 'ffmpeg.exe');
-    const output = await runBinary(ffmpegPath, ['-version']);
+    const output = await runBinary(paths.ffmpegPath, ['-version']);
     result.ffmpeg = firstLine(output);
   } catch (err) {
     result.ffmpegError = err.message;
@@ -99,16 +165,13 @@ ipcMain.handle('engine:check', async () => {
 });
 
 ipcMain.handle('video:getInfo', async (_event, url) => {
-  const ytDlpPath = getBinPath(resourcesRoot(), isDev, 'yt-dlp.exe');
+  const { ytDlpPath } = await enginePaths();
   return getVideoInfo(ytDlpPath, url);
 });
 
 // options: { url, title, section: { start, end } | null }
 ipcMain.handle('video:download', async (_event, options) => {
-  const root = resourcesRoot();
-  const ytDlpPath = getBinPath(root, isDev, 'yt-dlp.exe');
-  const ffprobePath = getBinPath(root, isDev, 'ffprobe.exe');
-  const ffmpegDir = path.dirname(getBinPath(root, isDev, 'ffmpeg.exe'));
+  const { ytDlpPath, ffprobePath, ffmpegDir } = await enginePaths();
   const downloadsDir = await getDownloadsDir();
 
   const result = await downloadVideo({
@@ -142,9 +205,7 @@ ipcMain.handle('video:download', async (_event, options) => {
 
 // options: { thumbnailUrl, title, id, format }
 ipcMain.handle('thumbnail:download', async (_event, options) => {
-  const root = resourcesRoot();
-  const ffmpegPath = getBinPath(root, isDev, 'ffmpeg.exe');
-  const ffprobePath = getBinPath(root, isDev, 'ffprobe.exe');
+  const { ffmpegPath, ffprobePath } = await enginePaths();
   const downloadsDir = await getDownloadsDir();
 
   return downloadThumbnail({
@@ -160,9 +221,7 @@ ipcMain.handle('thumbnail:download', async (_event, options) => {
 
 // options: { url, id, langs, format }
 ipcMain.handle('subtitles:download', async (_event, options) => {
-  const root = resourcesRoot();
-  const ytDlpPath = getBinPath(root, isDev, 'yt-dlp.exe');
-  const ffmpegDir = path.dirname(getBinPath(root, isDev, 'ffmpeg.exe'));
+  const { ytDlpPath, ffmpegDir } = await enginePaths();
   const downloadsDir = await getDownloadsDir();
 
   return downloadSubtitles({
@@ -189,17 +248,14 @@ ipcMain.handle('metadata:save', async (_event, options) => {
 });
 
 ipcMain.handle('playlist:getInfo', async (_event, url) => {
-  const ytDlpPath = getBinPath(resourcesRoot(), isDev, 'yt-dlp.exe');
+  const { ytDlpPath } = await enginePaths();
   return getPlaylistInfo(ytDlpPath, url);
 });
 
 // options: { items, quality, format, audioOnly, audioFormat }
 // items is the checklist selection: [{ id, url, title }, ...]
 ipcMain.handle('playlist:download', async (_event, options) => {
-  const root = resourcesRoot();
-  const ytDlpPath = getBinPath(root, isDev, 'yt-dlp.exe');
-  const ffprobePath = getBinPath(root, isDev, 'ffprobe.exe');
-  const ffmpegDir = path.dirname(getBinPath(root, isDev, 'ffmpeg.exe'));
+  const { ytDlpPath, ffprobePath, ffmpegDir } = await enginePaths();
   const downloadsDir = await getDownloadsDir();
 
   return downloadPlaylist({
@@ -257,7 +313,35 @@ ipcMain.handle('history:openFile', async (_event, filePath) => {
   shell.showItemInFolder(filePath);
 });
 
-app.whenReady().then(createWindow);
+// Lets the UI catch up on the last known engine-update state on mount —
+// covers the case where an update happened (or was already sitting there
+// unacknowledged from a previous launch) before the renderer's listener
+// for the live 'engine:updated' event was ready.
+ipcMain.handle('engine:updateStatus', async () => {
+  return readEngineMetadata(path.join(app.getPath('userData'), 'engine-versions.json'));
+});
+
+ipcMain.handle('engine:acknowledgeUpdate', async (_event, binary) => {
+  return acknowledgeEngineUpdate(app.getPath('userData'), binary);
+});
+
+// Manual "Undo" — restores the backup made just before the last recorded
+// update for that binary. Verified the same way a fresh update is: the
+// restored binary has to actually run before it's put back in place.
+ipcMain.handle('engine:rollback', async (_event, binary) => {
+  const userDataPath = app.getPath('userData');
+  const root = resourcesRoot();
+  if (binary === 'yt-dlp') return rollbackYtDlp({ userDataPath, resourcesRoot: root, isDev });
+  if (binary === 'ffmpeg') return rollbackFfmpeg({ userDataPath, resourcesRoot: root, isDev });
+  throw new Error(`Unknown binary: ${binary}`);
+});
+
+app.whenReady().then(() => {
+  createWindow();
+  // Never awaited here — the window is already open by the time this
+  // kicks off, so a slow or unreachable GitHub can't delay startup.
+  runEngineSelfHeal();
+});
 
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit();

@@ -98,6 +98,14 @@ export default function App() {
   const [clipboardSuggestion, setClipboardSuggestion] = useState(null);
   const [engineError, setEngineError] = useState(null);
 
+  // Phase 7: notices for self-healing engine updates the user hasn't seen
+  // yet — one entry per binary that updated ('yt-dlp' | 'ffmpeg'), each
+  // with an Undo affordance. Kept as a small array rather than one banner
+  // since yt-dlp and ffmpeg can update independently.
+  const [engineUpdateNotices, setEngineUpdateNotices] = useState([]);
+  const [rollingBackBinary, setRollingBackBinary] = useState(null);
+  const [rollbackError, setRollbackError] = useState(null);
+
   useEffect(() => {
     const unsubscribe = window.api.onDownloadProgress((p) => setProgress(p));
     return unsubscribe;
@@ -135,6 +143,56 @@ export default function App() {
     const unsubscribe = window.api.onClipboardDetected((text) => setClipboardSuggestion(text));
     return unsubscribe;
   }, []);
+
+  // Builds notice entries from any unacknowledged lastUpdate in the engine
+  // metadata — covers both a live update (see effect below) and one that
+  // happened earlier and hasn't been dismissed yet.
+  function noticesFromStatus(status) {
+    const notices = [];
+    if (status?.ytDlp?.lastUpdate && !status.ytDlp.lastUpdate.acknowledged) {
+      notices.push({ binary: 'yt-dlp', ...status.ytDlp.lastUpdate });
+    }
+    if (status?.ffmpeg?.lastUpdate && !status.ffmpeg.lastUpdate.acknowledged) {
+      notices.push({ binary: 'ffmpeg', ...status.ffmpeg.lastUpdate });
+    }
+    return notices;
+  }
+
+  useEffect(() => {
+    window.api
+      .getEngineUpdateStatus()
+      .then((status) => setEngineUpdateNotices(noticesFromStatus(status)))
+      .catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    const unsubscribe = window.api.onEngineUpdated((result) => {
+      setEngineUpdateNotices(noticesFromStatus(result.metadata));
+    });
+    return unsubscribe;
+  }, []);
+
+  async function handleDismissEngineNotice(binary) {
+    setEngineUpdateNotices((prev) => prev.filter((n) => n.binary !== binary));
+    try {
+      await window.api.acknowledgeEngineUpdate(binary);
+    } catch {
+      // Non-critical — worst case the notice reappears next launch.
+    }
+  }
+
+  async function handleRollbackEngine(binary) {
+    setRollingBackBinary(binary);
+    setRollbackError(null);
+    try {
+      await window.api.rollbackEngine(binary);
+      setEngineUpdateNotices((prev) => prev.filter((n) => n.binary !== binary));
+    } catch (err) {
+      setRollbackError(`Couldn't roll back ${binary}: ${err.message}`);
+    } finally {
+      setRollingBackBinary(null);
+    }
+  }
 
   async function handleCheckEngine() {
     setCheckingEngine(true);
@@ -486,6 +544,35 @@ export default function App() {
             Settings
           </button>
         </div>
+
+        {/* Phase 7: small, unobtrusive notice when the self-healing engine
+            actually updated something — silent otherwise. Each has its own
+            Undo, since yt-dlp and ffmpeg update independently. */}
+        {engineUpdateNotices.map((notice) => (
+          <div
+            key={notice.binary}
+            className="w-full rounded-lg bg-neutral-900 border border-neutral-800 px-3 py-2 flex items-center gap-2 text-xs"
+          >
+            <span className="flex-1 text-neutral-300">
+              {'\u2b06\ufe0f'} {notice.binary} updated ({notice.previousVersion} {'\u2192'} {notice.newVersion})
+            </span>
+            <button
+              onClick={() => handleRollbackEngine(notice.binary)}
+              disabled={rollingBackBinary === notice.binary}
+              className="shrink-0 text-neutral-400 hover:text-neutral-200 disabled:opacity-50 px-1"
+            >
+              {rollingBackBinary === notice.binary ? 'Undoing…' : 'Undo'}
+            </button>
+            <button
+              onClick={() => handleDismissEngineNotice(notice.binary)}
+              className="shrink-0 text-neutral-500 hover:text-neutral-300 px-1"
+              aria-label="Dismiss"
+            >
+              {'\u2715'}
+            </button>
+          </div>
+        ))}
+        {rollbackError && <p className="text-red-400 text-xs">{rollbackError}</p>}
 
         {engineError && <p className="text-red-400 text-xs">{engineError}</p>}
         {engineStatus && (
