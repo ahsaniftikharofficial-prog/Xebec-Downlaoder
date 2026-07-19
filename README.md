@@ -1,162 +1,184 @@
-# YT Downloader — Phase 7
+# Xebec Downloader — Phase 8
 
-Self-Healing Engine — on every launch, the app checks yt-dlp and ffmpeg
-against their latest releases and updates them in place if there's
-something newer, without ever blocking the app from opening. Old
-versions are kept on disk so a bad update can be rolled back.
+Packaging, Installer & App Auto-Update — the app now builds into a real
+Windows installer via GitHub Actions, and once installed, checks for and
+installs its own updates on launch, the same "never block, verify before
+installing" philosophy Phase 7 used for yt-dlp/ffmpeg.
+
+This is the last planned phase — after this, the app is a real,
+installable, self-updating Windows program.
 
 ## Setup (skip if you already did this before)
 
 1. `npm install` — installs all dependencies
-2. `npm run setup` — one-time ffmpeg download (skips if already present)
+2. `npm run setup` — downloads yt-dlp.exe **and** ffmpeg.exe/ffprobe.exe
+   into `resources/bin` (skips whichever is already there)
 3. `npm run dev` — opens the app window
 
-## An architecture change this phase needed
+## A naming decision I made
 
-Self-healing has to be able to **write** updated binaries somewhere, but a
-packaged Windows app's own install folder is often under `Program Files`,
-which isn't reliably writable without admin rights. So from this phase on,
-the binaries the app actually runs live in a writable copy under Electron's
-per-user data folder (`%APPDATA%/yt-downloader/engine/bin`), not inside the
-app's own resources folder.
+The installer's product name (Start Menu entry, taskbar, window title) was
+still the placeholder "YT Downloader" from Phase 0. Since this phase is
+about the actual public-facing installer, I renamed it to **Xebec
+Downloader**, matching your GitHub repo's real name (correcting the
+"Downlaoder" typo along the way — that's clearly a typo in the repo slug,
+not intended branding). This touched `package.json`'s `productName`, the
+HTML `<title>`, and the in-app heading. If you'd rather keep "YT
+Downloader," it's a three-line revert — just say so.
 
-The first time each binary is needed on a machine, it's seeded (copied)
-from the original bundled one — after that, self-healing owns the writable
-copy entirely, and the bundled original is never touched again. This
-touched every place in the app that runs yt-dlp or ffmpeg (video info,
-downloads, thumbnails, subtitles, playlists, Check Engine) — all of Phases
-1–6's *behavior* is unchanged, only *which file path* they run from.
+## What's new in Phase 8
 
-## What's new in Phase 7
+**A real Windows installer** — `package.json`'s `build` section (mostly
+already scaffolded back in Phase 0) now also sets `nsis` options
+(`allowToChangeInstallationDirectory`, `perMachine: false` — installs
+per-user, so it never needs admin rights) and a `publish` block pointing
+at your GitHub repo. Locally, `npm run dist` builds an NSIS installer
+`.exe` into `dist/`.
 
-**On-launch check** — a few seconds after the app opens, it quietly checks
-yt-dlp's and ffmpeg's latest GitHub releases in the background. If nothing
-needs updating (the common case), you'll never see anything — no popup,
-no delay. If no internet is available or GitHub is unreachable, the check
-just fails quietly and the app carries on with whatever's already
-installed; it never blocks startup.
+**GitHub Actions builds it for you** — `.github/workflows/release.yml`
+triggers on any pushed tag matching `v*.*.*` (like `v1.0.0`). It checks
+out the code on a real Windows runner, installs dependencies, downloads
+yt-dlp + ffmpeg, runs the full test suite, and builds + publishes the
+installer straight to a GitHub Release — see **Cutting a release** below
+for the exact steps.
 
-**yt-dlp updates** — compared by real version number (yt-dlp tags releases
-like `2025.06.09`). A newer build is downloaded, verified — it has to
-actually run and report the expected version before anything happens — and
-only then swapped in. A bad or truncated download can never overwrite a
-working install.
+**yt-dlp download is now automated** — Phase 7's README flagged that
+`yt-dlp.exe` had to be placed into `resources/bin` by hand, which doesn't
+work for an unattended CI build. `scripts/setup-ytdlp.js` fixes that,
+downloading the latest release the same way `setup-ffmpeg.js` already
+does for ffmpeg (and reusing Phase 7's own release-parsing logic, so
+there's exactly one place that understands yt-dlp's GitHub releases).
+`npm run setup` now runs both.
 
-**ffmpeg updates** — ffmpeg's Windows builds don't carry a clean version
-number the same way (the build that's "latest" keeps changing under the
-same rolling release), so instead the app tracks a marker for the build
-it has installed and re-downloads only when that marker changes. The very
-first check on a machine just records the marker as a baseline rather than
-re-downloading the ~150MB build immediately — it only downloads once an
-actual new build shows up after that.
+**The app updates itself** — `electron-updater` checks the GitHub Release
+feed a few seconds after each launch, in the background, exactly like
+Phase 7's engine check: never blocks startup, silent if there's nothing
+new or if GitHub's unreachable. If a genuinely newer version has been
+downloaded and verified (electron-updater checks the release's signature
+before ever telling the app it's ready), a small banner appears — *"🚀
+Update ready — v1.1.0 [Restart Now] [✕]"*. Clicking Restart Now quits and
+relaunches into the new version; dismissing just hides the banner for now.
 
-**Rollback** — every update backs up the version it's replacing before
-swapping anything in. If an update caused a problem, a small "Undo" on the
-update notice restores the previous version — verified the same way an
-update is, so a broken backup can't be swapped back in either. Up to 3
-previous versions of each binary are kept on disk; older ones are pruned
-automatically so this doesn't grow forever.
+This is a separate thing from Phase 7's engine notices — the app updating
+itself vs. yt-dlp/ffmpeg updating themselves. They can both show up at
+once; each has its own banner.
 
-**Small, unobtrusive indicator** — if an update actually happened, a small
-dismissible line appears near the top of the app: *"⬆️ yt-dlp updated
-(2025.06.09 → 2025.07.01) [Undo] [✕]"*. Dismissing it just hides it —
-nothing to configure, nothing in your way if you don't care.
+## Cutting a release (do this on your machine, not from a chat)
 
-## A gap worth flagging: the bot-check helper
+1. Bump `"version"` in `package.json` (e.g. `0.1.0` → `1.0.0`) and commit it.
+   Electron-builder and electron-updater both key off this field — the
+   installer's version and the "is there something newer" check both come
+   from it, so this step can't be skipped.
+2. Tag the commit and push the tag:
+   ```
+   git tag v1.0.0
+   git push origin v1.0.0
+   ```
+3. Watch the **Actions** tab on GitHub — the workflow builds on a Windows
+   runner (takes a few minutes) and publishes straight to a new GitHub
+   Release matching that tag.
+4. Once it finishes, that release has the installer `.exe` plus two files
+   electron-updater needs (`latest.yml`, and a `.exe.blockmap`) — don't
+   delete those two, they're not extra clutter, they're the update feed.
 
-The plan calls for self-healing to also cover the bot-check helper
-(`bgutil-ytdlp-pot-provider` + `yt-dlp-ejs`) mentioned back in the original
-tech stack. Going through the codebase for this phase, I found that helper
-was never actually bundled or wired in during Phases 0–6 — only yt-dlp and
-ffmpeg were. So there's nothing there yet for self-healing to check.
+Every release after your first install will show up as that "🚀 Update
+ready" banner automatically — you won't need to manually reinstall again
+after this.
 
-I built the self-healing system generically enough that adding a third
-binary later (once the bot-check helper is actually integrated) is just a
-new pair of `checkAndUpdateX` / `rollbackX` functions following the exact
-same pattern already used for yt-dlp and ffmpeg — not a redesign. But
-integrating that helper for the first time is a real, separate piece of
-work (it needs a local Node/Deno process, not just a downloadable exe), and
-I didn't want to fold "build it" into a phase whose job is "keep it
-updated." If YouTube's bot-checks start actually blocking downloads for
-you, that's worth scoping as its own small phase before Phase 8.
+## An important caveat: the installer isn't code-signed
+
+Windows will likely show a **SmartScreen warning** ("Windows protected
+your PC") the first time someone runs the installer, because it isn't
+signed with a paid code-signing certificate — normal and expected for an
+indie/solo project, not a bug. A real certificate costs money and isn't
+something I can set up for you from here. For your own use, "More info" →
+"Run anyway" gets past it. If you ever want to distribute this to other
+people at scale, that warning (and the trust hit that comes with it) is
+worth revisiting.
+
+Auto-updates themselves still work fine unsigned — electron-updater
+verifies the release's checksum, not a code signature — but be aware some
+antivirus software is more suspicious of unsigned auto-updating apps than
+signed ones.
 
 ## What I could and couldn't test from here
 
-I ran the full automated suite — **139 tests now (114 from before + 25
-new)**, all passing (`npm test`), and built the app to confirm there are
-no errors. Beyond the unit tests, I also ran real end-to-end dry runs
-against actual files on disk (not just mocked logic):
+I ran the full automated suite — **147 tests now (139 from before + 8
+new)**, all passing. I also validated the packaging config directly,
+which I hadn't been able to do for earlier phases:
 
-- First-run bootstrap (copying a bundled binary into the writable folder)
-  and confirmed it's idempotent on a second call
-- A full simulated update cycle: version check → download → verify →
-  backup → swap-in → confirmed the live binary actually changed
-- Rollback afterward → confirmed the previous version came back, and
-  neither file was ever deleted (both versions stayed on disk)
-- Five updates in a row → confirmed only the 3 most recent backups survive
-  pruning
-- The "already up to date" path → confirmed it does **not** attempt a
-  download at all
-- ffmpeg's check on a non-Windows machine → confirmed it's a clean,
-  silent no-op (same as `setup-ffmpeg.js` already does)
+- Ran a real (non-publishing) electron-builder package build. It's not
+  possible to build the actual Windows NSIS installer from this Linux
+  sandbox (that needs Wine), so I built for Linux instead, specifically to
+  validate the shared parts of the config — and confirmed:
+  - `resources/bin/*` (yt-dlp.exe, ffmpeg.exe, ffprobe.exe) get copied
+    into the packaged app's `resources/bin/`, exactly where Phase 7's
+    `getBinPath` expects to find them
+  - electron-builder auto-generated `app-update.yml` with the correct
+    `owner`, `repo`, and `releaseType: release` — confirming the
+    `publish` config is wired correctly for electron-updater to find
+  - `npm run setup` end-to-end against the **real** yt-dlp GitHub
+    release — it downloaded the actual current version (yt-dlp
+    `2026.07.04` at the time I ran this) and I verified the resulting
+    file is a genuine ~18MB Windows executable, not a stub
+- Confirmed the `setup-ytdlp.js` script fails loudly and clearly (not
+  silently) when GitHub's API rate-limits it, rather than writing a
+  broken file
 
-What I could **not** do from this sandbox: run the actual Windows
-`yt-dlp.exe`/`ffmpeg.exe` binaries, a real `PowerShell Expand-Archive`
-extraction, or a real download of a full ffmpeg build (I mocked the
-network calls to test the logic around them instead — the real GitHub
-API's response shape for releases is well-documented and stable, but I
-couldn't get a live sample from here due to that API's rate limit on
-shared connections). Before this phase counts as done, please check on
-your machine:
+What I could **not** do from here: actually build or run the Windows NSIS
+installer, test SmartScreen's behavior, push a real tag and watch the
+Actions workflow run, or trigger a real `electron-updater` download/
+install cycle end-to-end (that needs an actual installed app on Windows
+checking against an actual published release). Before this phase counts
+as done, please:
 
-1. Run the app once normally — confirm it opens immediately and you don't
-   notice any delay or freeze while the engine check runs in the background
-2. Turn off your internet, launch the app — confirm it still opens fine
-   and everything still works with whatever's already installed
-3. Open Check Engine — confirm the versions shown match what's actually
-   installed (this now reads from `%APPDATA%/yt-downloader/engine/bin`,
-   not the folder the app was installed into)
-4. If a real update happens to be available when you test this (check by
-   comparing your yt-dlp version against the latest on GitHub), confirm:
-   - the small update banner appears with the correct old → new versions
-   - "Undo" restores the previous version (Check Engine shows the old
-     version again afterward)
-   - dismissing (✕) makes the banner go away and it doesn't come back on
-     the next launch
-5. Look in `%APPDATA%/yt-downloader/engine/` — confirm `bin/` has the
-   live binaries and `versions/` has any backups
+1. Push a real tag (see **Cutting a release** above) and confirm the
+   Actions workflow finishes green and a Release with an installer
+   `.exe` shows up
+2. Download and run that installer on a Windows machine — confirm it
+   installs without needing admin rights, and the Start Menu / taskbar
+   show "Xebec Downloader"
+3. Bump the version, tag again, and push a second release — confirm the
+   already-installed app shows the "🚀 Update ready" banner next time you
+   launch it, and that "Restart Now" actually relaunches into the new
+   version (Settings or the window title should reflect it)
+4. Confirm dismissing (✕) makes the banner go away without crashing
+   anything
 
 If anything looks or behaves oddly, describe exactly what you saw in your
 next Claude chat.
 
 ## Running the automated tests
 
-`npm test` — runs Vitest. Should show 139 tests passing, no window needed.
+`npm test` — runs Vitest. Should show 147 tests passing, no window needed.
 
 ## Troubleshooting
 
-- **"yt-dlp.exe was not found"** on first launch — the bundled binary
-  couldn't be found to seed the writable copy from; reinstall the app, or
-  in dev, confirm `resources/bin/yt-dlp.exe` exists.
-- **Update banner won't go away** — click the ✕, not just navigate away;
-  dismissing is a deliberate action recorded so it won't reappear.
-- **"There is no recent update to roll back"** — Undo only works right
-  after an update that hasn't already been rolled back; there's nothing to
-  undo if nothing's changed, or if you already rolled it back once.
-- **Engine check shows an old version right after an update** — the
-  writable copy under `%APPDATA%` is what's authoritative from this phase
-  on; if Check Engine still looks stale, try it again after a fresh
-  launch.
-- Phase 1–6's troubleshooting entries (quality/format selection, verified
+- **SmartScreen warning on install** — expected, see the caveat above.
+- **Actions workflow fails on the publish step** — almost always a
+  permissions issue; confirm the repo's Settings → Actions → General →
+  "Workflow permissions" allows "Read and write permissions" (some repos
+  default to read-only, which blocks `GITHUB_TOKEN` from publishing a
+  release).
+- **"🚀 Update ready" never appears** even after a new release — the app
+  only checks in a packaged build (`app.isPackaged`), never in `npm run
+  dev`; also double check the new release isn't a draft (the `publish`
+  config sets `releaseType: "release"` specifically to avoid this, but
+  worth checking on GitHub directly if it ever seems stuck).
+- **Installer won't run at all** — confirm you downloaded the `.exe`
+  installer asset from the Release, not the source code zip GitHub adds
+  automatically to every tag.
+- Phase 1–7's troubleshooting entries (quality/format selection, verified
   downloads, playlists, clip scrubber, thumbnails/subtitles/metadata,
-  clipboard detection, settings, history) still apply unchanged.
+  clipboard detection, settings, history, engine self-healing) still apply
+  unchanged.
 
 ## Next session
 
-Once you've checked the self-healing behavior on your machine, open the
-project plan file, update **Current Status** to Phase 8, and start a new
-chat.
-
-(Same note as every phase: keep Plan.md's Current Status in sync as you
-go — this README documents what's actually built at each phase, and is
-the most reliable source if the two ever disagree.)
+This was the last phase in the original plan. Once you've confirmed a
+real release installs and self-updates correctly, the app is feature
+complete against Plan.md. Anything from here — the bot-check helper gap
+flagged in Phase 7, code signing, more polish — is worth scoping as its
+own deliberate next step rather than assumed. Update Plan.md's Current
+Status to reflect that before your next session, so a fresh chat starts
+from the right place.

@@ -41,4 +41,11 @@ contextBridge.exposeInMainWorld('api', {
     ipcRenderer.on('engine:updated', listener);
     return () => ipcRenderer.removeListener('engine:updated', listener);
   },
+  getAppVersion: () => ipcRenderer.invoke('appUpdate:getVersion'),
+  installAppUpdate: () => ipcRenderer.invoke('appUpdate:install'),
+  onAppUpdateReady: (callback) => {
+    const listener = (_event, notice) => callback(notice);
+    ipcRenderer.on('appUpdate:ready', listener);
+    return () => ipcRenderer.removeListener('appUpdate:ready', listener);
+  },
 });

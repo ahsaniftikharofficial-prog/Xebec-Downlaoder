@@ -18,6 +18,8 @@ const {
   rollbackFfmpeg,
   acknowledgeEngineUpdate,
 } = require('./updaterManager');
+const { autoUpdater } = require('electron-updater');
+const { buildUpdateNotice, isMeaningfulUpdate } = require('./appUpdater');
 
 const isDev = process.env.NODE_ENV === 'development';
 const projectRoot = path.join(__dirname, '..');
@@ -105,6 +107,38 @@ function checkClipboardForYouTubeLink() {
 
   lastNotifiedClipboardText = text;
   if (mainWindow) mainWindow.webContents.send('clipboard:detected', text);
+}
+
+// Phase 8: updates the app itself, separate from Phase 7's engine
+// self-heal (which only ever touches yt-dlp/ffmpeg). electron-updater
+// checks the GitHub Releases feed configured in package.json's "build"
+// section, downloads in the background, and verifies the release's
+// signature before ever emitting 'update-downloaded' — this app never
+// installs anything it hasn't confirmed came from that feed.
+//
+// Only 'update-downloaded' and 'error' are listened to directly — every
+// other event (checking, available-but-still-downloading,
+// not-available) is deliberately left silent, same "don't nag" approach
+// as Phase 7's engine notices.
+autoUpdater.on('update-downloaded', (info) => {
+  const notice = buildUpdateNotice('update-downloaded', info);
+  if (notice && isMeaningfulUpdate(app.getVersion(), notice.version)) {
+    sendToRenderer('appUpdate:ready', notice);
+  }
+});
+autoUpdater.on('error', (err) => {
+  // Same philosophy as Phase 7: a failed background check is not
+  // something that should ever interrupt the user.
+  console.error('App update check failed:', err.message);
+});
+
+async function runAppSelfUpdateCheck() {
+  if (!app.isPackaged) return; // no release feed to check against in dev
+  try {
+    await autoUpdater.checkForUpdates();
+  } catch (err) {
+    console.error('App update check failed:', err.message);
+  }
 }
 
 function createWindow() {
@@ -336,11 +370,22 @@ ipcMain.handle('engine:rollback', async (_event, binary) => {
   throw new Error(`Unknown binary: ${binary}`);
 });
 
+ipcMain.handle('appUpdate:getVersion', async () => app.getVersion());
+
+// Quits and installs the already-downloaded, already-verified update.
+// Only ever called after the user clicks "Restart Now" on the update
+// notice — never automatically.
+ipcMain.handle('appUpdate:install', async () => {
+  autoUpdater.quitAndInstall();
+});
+
 app.whenReady().then(() => {
   createWindow();
-  // Never awaited here — the window is already open by the time this
-  // kicks off, so a slow or unreachable GitHub can't delay startup.
+  // Neither of these is awaited here — the window is already open by the
+  // time they kick off, so a slow or unreachable GitHub can't delay
+  // startup for either the engine binaries or the app itself.
   runEngineSelfHeal();
+  runAppSelfUpdateCheck();
 });
 
 app.on('window-all-closed', () => {

@@ -1,13 +1,15 @@
 {
   "name": "yt-downloader",
   "version": "0.1.0",
+  "description": "A standalone Windows app for downloading YouTube video, audio, playlists, thumbnails, subtitles, metadata, and clips.",
+  "author": "ahsaniftikharofficial-prog",
   "private": true,
   "main": "electron/main.js",
   "scripts": {
     "dev": "concurrently -k \"npm:dev:vite\" \"npm:dev:electron\"",
     "dev:vite": "vite",
     "dev:electron": "wait-on tcp:5173 && cross-env NODE_ENV=development electron .",
-    "setup": "node scripts/setup-ffmpeg.js",
+    "setup": "node scripts/setup-ffmpeg.js && node scripts/setup-ytdlp.js",
     "build": "vite build",
     "dist": "npm run build && electron-builder",
     "test": "vitest run"
@@ -26,16 +28,38 @@
     "wait-on": "^7.2.0"
   },
   "dependencies": {
+    "electron-updater": "^6.8.9",
     "react": "^18.3.1",
     "react-dom": "^18.3.1"
   },
   "build": {
-    "appId": "com.example.ytdownloader",
-    "productName": "YT Downloader",
-    "files": ["dist/**/*", "electron/**/*"],
-    "extraResources": [
-      { "from": "resources/bin", "to": "bin" }
+    "appId": "com.ahsaniftikhar.xebecdownloader",
+    "productName": "Xebec Downloader",
+    "files": [
+      "dist/**/*",
+      "electron/**/*"
     ],
-    "win": { "target": "nsis" }
+    "extraResources": [
+      {
+        "from": "resources/bin",
+        "to": "bin"
+      }
+    ],
+    "win": {
+      "target": "nsis"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "perMachine": false
+    },
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "ahsaniftikharofficial-prog",
+        "repo": "Xebec-Downlaoder",
+        "releaseType": "release"
+      }
+    ]
   }
 }

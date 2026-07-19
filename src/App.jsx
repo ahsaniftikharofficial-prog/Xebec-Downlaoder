@@ -106,6 +106,11 @@ export default function App() {
   const [rollingBackBinary, setRollingBackBinary] = useState(null);
   const [rollbackError, setRollbackError] = useState(null);
 
+  // Phase 8: separate from the engine notices above — this is the app
+  // itself (not yt-dlp/ffmpeg) having a new version ready to install.
+  const [appUpdateNotice, setAppUpdateNotice] = useState(null);
+  const [installingUpdate, setInstallingUpdate] = useState(false);
+
   useEffect(() => {
     const unsubscribe = window.api.onDownloadProgress((p) => setProgress(p));
     return unsubscribe;
@@ -171,6 +176,22 @@ export default function App() {
     });
     return unsubscribe;
   }, []);
+
+  useEffect(() => {
+    const unsubscribe = window.api.onAppUpdateReady((notice) => setAppUpdateNotice(notice));
+    return unsubscribe;
+  }, []);
+
+  async function handleInstallAppUpdate() {
+    setInstallingUpdate(true);
+    try {
+      await window.api.installAppUpdate();
+      // The app quits and relaunches itself at this point — nothing else
+      // to do here if it succeeds.
+    } catch {
+      setInstallingUpdate(false);
+    }
+  }
 
   async function handleDismissEngineNotice(binary) {
     setEngineUpdateNotices((prev) => prev.filter((n) => n.binary !== binary));
@@ -520,7 +541,7 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-neutral-950 text-neutral-100 flex flex-col items-center gap-6 p-8">
-      <h1 className="text-2xl font-semibold tracking-tight">YT Downloader</h1>
+      <h1 className="text-2xl font-semibold tracking-tight">Xebec Downloader</h1>
 
       <div className="w-full max-w-md flex flex-col items-center gap-2">
         <div className="flex gap-2 w-full">
@@ -544,6 +565,30 @@ export default function App() {
             Settings
           </button>
         </div>
+
+        {/* Phase 8: the app itself has a downloaded, verified update ready
+            to install — separate from Phase 7's engine notices below. */}
+        {appUpdateNotice && (
+          <div className="w-full rounded-lg bg-neutral-900 border border-neutral-800 px-3 py-2 flex items-center gap-2 text-xs">
+            <span className="flex-1 text-neutral-300">
+              {'\ud83d\ude80'} Update ready{appUpdateNotice.version ? ` — v${appUpdateNotice.version}` : ''}
+            </span>
+            <button
+              onClick={handleInstallAppUpdate}
+              disabled={installingUpdate}
+              className={`shrink-0 rounded px-2 py-1 text-neutral-950 font-medium disabled:opacity-50 ${accent.solid}`}
+            >
+              {installingUpdate ? 'Restarting…' : 'Restart Now'}
+            </button>
+            <button
+              onClick={() => setAppUpdateNotice(null)}
+              className="shrink-0 text-neutral-500 hover:text-neutral-300 px-1"
+              aria-label="Dismiss"
+            >
+              {'\u2715'}
+            </button>
+          </div>
+        )}
 
         {/* Phase 7: small, unobtrusive notice when the self-healing engine
             actually updated something — silent otherwise. Each has its own
