@@ -145,9 +145,28 @@ function buildDownloadArgs({ url, outputTemplate, ffmpegDir, section, quality, f
     '--ffmpeg-location', ffmpegDir,
     '-o', outputTemplate,
     '--newline',
+    // --print (below) implies --quiet, which would otherwise silently
+    // swallow every progress update along with the normal log lines —
+    // this is the one flag that keeps progress reporting alive.
+    '--no-quiet',
     // Prints one clean JSON object per progress update — far more robust
     // than regex-matching yt-dlp's human-readable "45.2% of 50MiB..." text.
-    '--progress-template', 'download:%(progress)j',
+    // The progress fields only exist nested under "progress." (bare
+    // %(progress)j resolves to nothing and prints no line at all), and
+    // every field is wrapped in its own quotes rather than run through
+    // yt-dlp's %()j json-conversion: an unavailable field like eta or
+    // speed renders as the bare word NA, which %()j passes through
+    // unquoted and breaks JSON.parse on the other end. Quoting each field
+    // as a string keeps every line valid JSON regardless; parseProgressLine
+    // below is responsible for turning "NA" back into null and numeric
+    // strings back into numbers.
+    '--progress-template',
+    'download:{"status": "%(progress.status)s", ' +
+      '"downloaded_bytes": "%(progress.downloaded_bytes)s", ' +
+      '"total_bytes": "%(progress.total_bytes)s", ' +
+      '"total_bytes_estimate": "%(progress.total_bytes_estimate)s", ' +
+      '"eta": "%(progress.eta)s", ' +
+      '"speed": "%(progress.speed)s"}',
     // Prints the real, final file path once the download (and any
     // merge/move) is actually complete — confirmed against yt-dlp's source
     // to run as a genuine download, not just a simulation.
@@ -183,20 +202,32 @@ function parseProgressLine(line) {
   const { status, downloaded_bytes: downloadedBytes, total_bytes: totalBytes,
     total_bytes_estimate: totalBytesEstimate, eta, speed } = parsed;
 
-  const total = totalBytes ?? totalBytesEstimate ?? null;
+  // Every numeric field comes from --progress-template as a string, and
+  // yt-dlp renders a field it doesn't have yet (eta/speed early on, or
+  // total_bytes when only an estimate is known) as the literal text "NA"
+  // rather than a real number. This normalizes any of {real number,
+  // numeric string, "NA", null, undefined} down to a real number or null.
+  const toNumber = (value) => {
+    if (value == null) return null;
+    const num = Number(value);
+    return Number.isFinite(num) ? num : null;
+  };
+
+  const downloadedBytesNum = toNumber(downloadedBytes);
+  const totalBytesNum = toNumber(totalBytes) ?? toNumber(totalBytesEstimate);
   const percent = status === 'finished'
     ? 100
-    : (total && downloadedBytes != null)
-      ? Math.min(100, (downloadedBytes / total) * 100)
+    : (totalBytesNum != null && downloadedBytesNum != null)
+      ? Math.min(100, (downloadedBytesNum / totalBytesNum) * 100)
       : null;
 
   return {
     status,
     percent,
-    downloadedBytes: downloadedBytes ?? null,
-    totalBytes: total,
-    eta: eta ?? null,
-    speed: speed ?? null,
+    downloadedBytes: downloadedBytesNum,
+    totalBytes: totalBytesNum,
+    eta: toNumber(eta),
+    speed: toNumber(speed),
   };
 }
 

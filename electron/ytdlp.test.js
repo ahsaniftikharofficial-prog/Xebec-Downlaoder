@@ -174,6 +174,31 @@ describe('buildDownloadArgs', () => {
     const args = buildDownloadArgs({ ...base, section: null, audioOnly: true });
     expect(args[args.indexOf('--audio-format') + 1]).toBe('mp3');
   });
+
+  // Regression coverage for a real bug: --print implies --quiet, which
+  // silently swallows --progress-template output too (confirmed against
+  // real yt-dlp — with --print present and no --no-quiet, zero progress
+  // lines are ever printed, even though the download runs to completion).
+  it('passes --no-quiet so --print does not silently suppress progress output', () => {
+    const args = buildDownloadArgs({ ...base, section: null });
+    expect(args).toContain('--no-quiet');
+    expect(args).toContain('--print');
+  });
+
+  // The progress fields only resolve when nested under "progress." — a
+  // bare %(progress)j prints nothing at all (confirmed against real
+  // yt-dlp), so this locks in the field paths the template must use.
+  it('scopes every progress field under "progress." in the template', () => {
+    const args = buildDownloadArgs({ ...base, section: null });
+    const template = args[args.indexOf('--progress-template') + 1];
+    expect(template).toContain('%(progress.status)s');
+    expect(template).toContain('%(progress.downloaded_bytes)s');
+    expect(template).toContain('%(progress.total_bytes)s');
+    expect(template).toContain('%(progress.total_bytes_estimate)s');
+    expect(template).toContain('%(progress.eta)s');
+    expect(template).toContain('%(progress.speed)s');
+    expect(template).not.toMatch(/%\(progress\)j/);
+  });
 });
 
 describe('parseProgressLine', () => {
@@ -216,6 +241,52 @@ describe('parseProgressLine', () => {
 
   it('returns null for an empty line', () => {
     expect(parseProgressLine('   ')).toBeNull();
+  });
+
+  // Regression coverage: the real --progress-template renders every field
+  // as a quoted string (confirmed against real yt-dlp), and renders a
+  // field it doesn't have yet as the literal text "NA" rather than a
+  // number or JSON null.
+  it('parses stringified numeric fields the same as real numbers', () => {
+    const line = JSON.stringify({
+      status: 'downloading',
+      downloaded_bytes: '2097152',
+      total_bytes: '10485760',
+      eta: '8',
+      speed: '524288',
+    });
+    const result = parseProgressLine(line);
+    expect(result.downloadedBytes).toBe(2097152);
+    expect(result.totalBytes).toBe(10485760);
+    expect(result.eta).toBe(8);
+    expect(result.speed).toBe(524288);
+    expect(result.percent).toBeCloseTo(20, 1);
+  });
+
+  it('treats the "NA" placeholder as null instead of NaN or crashing', () => {
+    const line = JSON.stringify({
+      status: 'downloading',
+      downloaded_bytes: '1024',
+      total_bytes: 'NA',
+      total_bytes_estimate: 'NA',
+      eta: 'NA',
+      speed: 'NA',
+    });
+    const result = parseProgressLine(line);
+    expect(result.totalBytes).toBeNull();
+    expect(result.eta).toBeNull();
+    expect(result.speed).toBeNull();
+    expect(result.percent).toBeNull();
+  });
+
+  it('falls back to a stringified total_bytes_estimate when total_bytes is "NA"', () => {
+    const line = JSON.stringify({
+      status: 'downloading',
+      downloaded_bytes: '50',
+      total_bytes: 'NA',
+      total_bytes_estimate: '100',
+    });
+    expect(parseProgressLine(line).percent).toBeCloseTo(50, 1);
   });
 });
 
