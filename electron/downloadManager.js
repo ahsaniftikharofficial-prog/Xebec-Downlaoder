@@ -14,6 +14,7 @@ const {
   parseVideoInfo,
   parseProgressLine,
   isLikelyFilePath,
+  extractErrorMessage,
 } = require('./ytdlp');
 const { probeDuration, isDurationCloseEnough } = require('./verify');
 
@@ -29,7 +30,11 @@ function getVideoInfo(ytDlpPath, url) {
 
     proc.on('close', (code) => {
       if (code !== 0) {
-        return reject(new Error(stderr.trim() || `yt-dlp exited with code ${code}`));
+        // Full stderr (WARNING lines included) still goes to the console for
+        // debugging — only the trimmed-down ERROR line is what gets thrown
+        // and shown to the user.
+        if (stderr.trim()) console.error(stderr.trim());
+        return reject(new Error(extractErrorMessage(stderr) || `yt-dlp exited with code ${code}`));
       }
       try {
         resolve(parseVideoInfo(stdout));
@@ -73,7 +78,8 @@ function downloadVideo({ ytDlpPath, ffprobePath, ffmpegDir, url, downloadsDir, s
 
     proc.on('close', async (code) => {
       if (code !== 0) {
-        return reject(new Error(stderr.trim() || `yt-dlp exited with code ${code}`));
+        if (stderr.trim()) console.error(stderr.trim());
+        return reject(new Error(extractErrorMessage(stderr) || `yt-dlp exited with code ${code}`));
       }
       if (!resultFilePath || !fs.existsSync(resultFilePath)) {
         return reject(new Error('Download finished but the output file could not be located.'));

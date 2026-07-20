@@ -11,7 +11,7 @@ const path = require('path');
 const os = require('os');
 const { spawn } = require('child_process');
 
-const { buildSubtitleArgs, parseSubtitleFilename } = require('./ytdlp');
+const { buildSubtitleArgs, parseSubtitleFilename, extractErrorMessage } = require('./ytdlp');
 const {
   buildThumbnailOutputPath,
   buildMetadataOutputPath,
@@ -82,7 +82,8 @@ function downloadSubtitles({ ytDlpPath, ffmpegDir, url, downloadsDir, id, langs,
 
     proc.on('close', (code) => {
       if (code !== 0) {
-        return reject(new Error(stderr.trim() || `yt-dlp exited with code ${code}`));
+        if (stderr.trim()) console.error(stderr.trim());
+        return reject(new Error(extractErrorMessage(stderr) || `yt-dlp exited with code ${code}`));
       }
 
       let entries = [];

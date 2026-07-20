@@ -51,7 +51,21 @@ async function enginePaths() {
   const ytDlpPath = await ensureEngineBinary(userDataPath, root, isDev, 'yt-dlp.exe');
   const ffmpegPath = await ensureEngineBinary(userDataPath, root, isDev, 'ffmpeg.exe');
   const ffprobePath = await ensureEngineBinary(userDataPath, root, isDev, 'ffprobe.exe');
-  return { ytDlpPath, ffmpegPath, ffprobePath, ffmpegDir: path.dirname(ffmpegPath) };
+  // deno.exe isn't passed to yt-dlp as an argument anywhere — yt-dlp
+  // auto-detects and uses it (it's the default-enabled JS runtime) purely
+  // by finding it in the same folder as yt-dlp.exe, which is why this has
+  // to be seeded into the same writable bin dir as ytDlpPath above rather
+  // than left in the read-only bundled resources folder. Best-effort: an
+  // older install that predates this or a machine where the download
+  // failed just falls back to yt-dlp's own "no JS runtime" warning/limited
+  // extraction instead of breaking the app.
+  let denoPath = null;
+  try {
+    denoPath = await ensureEngineBinary(userDataPath, root, isDev, 'deno.exe');
+  } catch {
+    // Non-fatal — see comment above.
+  }
+  return { ytDlpPath, ffmpegPath, ffprobePath, ffmpegDir: path.dirname(ffmpegPath), denoPath };
 }
 
 // Sends an IPC event once the window has actually finished loading and
@@ -179,6 +193,7 @@ ipcMain.handle('engine:check', async () => {
   } catch (err) {
     result.ytDlpError = err.message;
     result.ffmpegError = err.message;
+    result.denoError = err.message;
     return result;
   }
 
@@ -193,6 +208,20 @@ ipcMain.handle('engine:check', async () => {
     result.ffmpeg = firstLine(output);
   } catch (err) {
     result.ffmpegError = err.message;
+  }
+
+  // Not fatal if this is missing — yt-dlp just falls back to its own
+  // "no JS runtime" warning and more limited YouTube extraction — but it's
+  // worth surfacing here since it's exactly what "Check Engine" is for.
+  if (!paths.denoPath) {
+    result.denoError = 'Not installed. Run "npm run setup" (or reinstall the app) to add it.';
+  } else {
+    try {
+      const output = await runBinary(paths.denoPath, ['--version']);
+      result.deno = firstLine(output);
+    } catch (err) {
+      result.denoError = err.message;
+    }
   }
 
   return result;

@@ -7,6 +7,7 @@
 const { spawn } = require('child_process');
 const { buildPlaylistInfoArgs, parsePlaylistInfo, processQueue } = require('./playlist');
 const { downloadVideo } = require('./downloadManager');
+const { extractErrorMessage } = require('./ytdlp');
 
 function getPlaylistInfo(ytDlpPath, url) {
   return new Promise((resolve, reject) => {
@@ -20,7 +21,8 @@ function getPlaylistInfo(ytDlpPath, url) {
 
     proc.on('close', (code) => {
       if (code !== 0) {
-        return reject(new Error(stderr.trim() || `yt-dlp exited with code ${code}`));
+        if (stderr.trim()) console.error(stderr.trim());
+        return reject(new Error(extractErrorMessage(stderr) || `yt-dlp exited with code ${code}`));
       }
       try {
         resolve(parsePlaylistInfo(stdout));

@@ -9,7 +9,7 @@
     "dev": "concurrently -k \"npm:dev:vite\" \"npm:dev:electron\"",
     "dev:vite": "vite",
     "dev:electron": "wait-on tcp:5173 && cross-env NODE_ENV=development electron .",
-    "setup": "node scripts/setup-ffmpeg.js && node scripts/setup-ytdlp.js",
+    "setup": "node scripts/setup-ffmpeg.js && node scripts/setup-ytdlp.js && node scripts/setup-deno.js",
     "build": "vite build",
     "dist": "npm run build && electron-builder",
     "test": "vitest run"

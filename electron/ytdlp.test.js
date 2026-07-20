@@ -13,6 +13,7 @@ import {
   parseProgressLine,
   parseSubtitleFilename,
   isLikelyFilePath,
+  extractErrorMessage,
 } from './ytdlp.js';
 
 describe('buildInfoArgs', () => {
@@ -233,6 +234,37 @@ describe('isLikelyFilePath', () => {
 
   it('rejects an empty line', () => {
     expect(isLikelyFilePath('')).toBe(false);
+  });
+});
+
+describe('extractErrorMessage', () => {
+  it('drops WARNING lines and keeps only the ERROR line', () => {
+    const stderr = [
+      'WARNING: [youtube] No supported JavaScript runtime could be found. Only deno is enabled by default; to use another runtime add --js-runtimes RUNTIME[:PATH] to your command/config. YouTube extraction without a JS runtime has been deprecated, and some formats may be missing. See https://github.com/yt-dlp/yt-dlp/wiki/EJS for details on installing one',
+      'ERROR: [youtube] _OBlgSz8sSM: This video is not available',
+    ].join('\n');
+    expect(extractErrorMessage(stderr)).toBe('ERROR: [youtube] _OBlgSz8sSM: This video is not available');
+  });
+
+  it('joins multiple ERROR lines with a space', () => {
+    const stderr = 'ERROR: first problem\nERROR: second problem';
+    expect(extractErrorMessage(stderr)).toBe('ERROR: first problem ERROR: second problem');
+  });
+
+  it('falls back to the full trimmed text when there is no ERROR line', () => {
+    const stderr = 'WARNING: something odd happened\nsome other diagnostic line';
+    expect(extractErrorMessage(stderr)).toBe(stderr);
+  });
+
+  it('returns an empty string for empty or missing stderr', () => {
+    expect(extractErrorMessage('')).toBe('');
+    expect(extractErrorMessage('   ')).toBe('');
+    expect(extractErrorMessage(undefined)).toBe('');
+  });
+
+  it('is not fooled by "ERROR:" appearing mid-line — only line starts count', () => {
+    const stderr = 'WARNING: retrying after ERROR: transient\nERROR: the real failure';
+    expect(extractErrorMessage(stderr)).toBe('ERROR: the real failure');
   });
 });
 

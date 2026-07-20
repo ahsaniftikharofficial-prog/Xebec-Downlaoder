@@ -247,6 +247,26 @@ function parseSubtitleFilename(filename, id) {
   return { lang: match[1], ext: match[2] };
 }
 
+// yt-dlp's stderr often carries one or more multi-line WARNING messages
+// (deprecation notices, the "no JS runtime" notice, etc.) printed before
+// the actual ERROR line that made the process fail. Every caller here
+// used to reject with the whole raw blob, which meant the UI showed
+// paragraphs of warning text on top of the one line that actually
+// mattered. This pulls out just the "ERROR:" line(s) so the app can show
+// something a user can actually read at a glance — the full stderr is
+// still there in the console/log for anyone debugging.
+function extractErrorMessage(stderr) {
+  const trimmed = (stderr || '').trim();
+  if (!trimmed) return '';
+
+  const errorLines = trimmed
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line.startsWith('ERROR:'));
+
+  return errorLines.length > 0 ? errorLines.join(' ') : trimmed;
+}
+
 module.exports = {
   buildInfoArgs,
   parseVideoInfo,
@@ -260,4 +280,5 @@ module.exports = {
   parseProgressLine,
   parseSubtitleFilename,
   isLikelyFilePath,
+  extractErrorMessage,
 };

@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import ClipScrubber from './ClipScrubber';
 import { parseTimestamp, formatTimestamp, moveClipHandle } from './clip';
 import { ACCENT_COLORS, ACCENT_THEMES } from './theme';
+import { cleanErrorMessage } from './errors';
 
 function formatDuration(totalSeconds) {
   if (totalSeconds == null) return 'unknown length';
@@ -127,7 +128,7 @@ export default function App() {
                 ...item,
                 status: update.status,
                 percent: update.progress?.percent ?? item.percent,
-                error: update.error ?? null,
+                error: update.error ? cleanErrorMessage(update.error) : null,
               }
             : item
         )
@@ -209,7 +210,7 @@ export default function App() {
       await window.api.rollbackEngine(binary);
       setEngineUpdateNotices((prev) => prev.filter((n) => n.binary !== binary));
     } catch (err) {
-      setRollbackError(`Couldn't roll back ${binary}: ${err.message}`);
+      setRollbackError(`Couldn't roll back ${binary}: ${cleanErrorMessage(err.message)}`);
     } finally {
       setRollingBackBinary(null);
     }
@@ -222,7 +223,7 @@ export default function App() {
     try {
       setEngineStatus(await window.api.checkEngine());
     } catch (err) {
-      setEngineError(err.message);
+      setEngineError(cleanErrorMessage(err.message));
     } finally {
       setCheckingEngine(false);
     }
@@ -234,7 +235,7 @@ export default function App() {
     try {
       setHistory(await window.api.getHistory());
     } catch (err) {
-      setHistoryError(err.message);
+      setHistoryError(cleanErrorMessage(err.message));
     } finally {
       setLoadingHistory(false);
     }
@@ -246,7 +247,7 @@ export default function App() {
     try {
       setHistory(await window.api.clearHistory());
     } catch (err) {
-      setHistoryError(err.message);
+      setHistoryError(cleanErrorMessage(err.message));
     }
   }
 
@@ -255,7 +256,7 @@ export default function App() {
     try {
       await window.api.openHistoryFile(filePath);
     } catch (err) {
-      setHistoryError(err.message);
+      setHistoryError(cleanErrorMessage(err.message));
     }
   }
 
@@ -264,7 +265,7 @@ export default function App() {
     try {
       setSettings(await window.api.setSettings(updates));
     } catch (err) {
-      setSettingsError(err.message);
+      setSettingsError(cleanErrorMessage(err.message));
     }
   }
 
@@ -273,7 +274,7 @@ export default function App() {
     try {
       setSettings(await window.api.chooseDownloadFolder());
     } catch (err) {
-      setSettingsError(err.message);
+      setSettingsError(cleanErrorMessage(err.message));
     }
   }
 
@@ -319,7 +320,7 @@ export default function App() {
         // few videos, not for opting every single one in by hand.
         setSelectedIds(new Set(fetched.entries.map((e) => e.id)));
       } catch (err) {
-        setPlaylistError(err.message);
+        setPlaylistError(cleanErrorMessage(err.message));
       } finally {
         setLoadingInfo(false);
       }
@@ -344,7 +345,7 @@ export default function App() {
       setClipStartText(formatTimestamp(0));
       setClipEndText(formatTimestamp(duration));
     } catch (err) {
-      setInfoError(err.message);
+      setInfoError(cleanErrorMessage(err.message));
     } finally {
       setLoadingInfo(false);
     }
@@ -377,7 +378,7 @@ export default function App() {
       await window.api.downloadPlaylist({ items });
       refreshHistory();
     } catch (err) {
-      setQueueError(err.message);
+      setQueueError(cleanErrorMessage(err.message));
     } finally {
       setQueueRunning(false);
     }
@@ -420,7 +421,7 @@ export default function App() {
       });
       setThumbnailResult(res);
     } catch (err) {
-      setThumbnailError(err.message);
+      setThumbnailError(cleanErrorMessage(err.message));
     } finally {
       setSavingThumbnail(false);
     }
@@ -445,7 +446,7 @@ export default function App() {
       });
       setSubtitleResult(res);
     } catch (err) {
-      setSubtitleError(err.message);
+      setSubtitleError(cleanErrorMessage(err.message));
     } finally {
       setSavingSubtitles(false);
     }
@@ -459,7 +460,7 @@ export default function App() {
       const res = await window.api.saveMetadata({ info, format: metadataFormat });
       setMetadataResult(res);
     } catch (err) {
-      setMetadataError(err.message);
+      setMetadataError(cleanErrorMessage(err.message));
     } finally {
       setSavingMetadata(false);
     }
@@ -483,7 +484,7 @@ export default function App() {
       setResult(res);
       refreshHistory();
     } catch (err) {
-      setDownloadError(err.message);
+      setDownloadError(cleanErrorMessage(err.message));
     } finally {
       setDownloading(false);
     }
@@ -624,6 +625,7 @@ export default function App() {
           <div className="w-full rounded-lg bg-neutral-900 border border-neutral-800 p-3 text-xs font-mono">
             <div>yt-dlp: {engineStatus.ytDlp ?? `\u274c ${engineStatus.ytDlpError}`}</div>
             <div>ffmpeg: {engineStatus.ffmpeg ?? `\u274c ${engineStatus.ffmpegError}`}</div>
+            <div>deno: {engineStatus.deno ?? `\u274c ${engineStatus.denoError}`}</div>
           </div>
         )}
 
