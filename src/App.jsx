@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import ClipScrubber from './ClipScrubber';
 import { parseTimestamp, formatTimestamp, moveClipHandle } from './clip';
 import { ACCENT_COLORS, ACCENT_THEMES } from './theme';
@@ -9,6 +9,38 @@ function formatDuration(totalSeconds) {
   const m = Math.floor(totalSeconds / 60);
   const s = Math.floor(totalSeconds % 60);
   return `${m}:${s.toString().padStart(2, '0')}`;
+}
+
+// IDM-style human sizes: "45.2 MB", "1.3 GB" — two decimals under 10 of a
+// unit, one decimal above, so the number never jitters by more digits than
+// it needs to.
+function formatBytes(bytes) {
+  if (bytes == null || !Number.isFinite(bytes)) return null;
+  if (bytes < 1024) return `${Math.round(bytes)} B`;
+  const units = ['KB', 'MB', 'GB', 'TB'];
+  let value = bytes;
+  let unitIndex = -1;
+  do {
+    value /= 1024;
+    unitIndex++;
+  } while (value >= 1024 && unitIndex < units.length - 1);
+  return `${value.toFixed(value < 10 ? 2 : 1)} ${units[unitIndex]}`;
+}
+
+function formatSpeed(bytesPerSecond) {
+  const formatted = formatBytes(bytesPerSecond);
+  return formatted ? `${formatted}/s` : null;
+}
+
+// "0:42" under an hour, "1:03:20" once it runs past one.
+function formatEta(totalSeconds) {
+  if (totalSeconds == null || !Number.isFinite(totalSeconds)) return null;
+  const s = Math.max(0, Math.round(totalSeconds));
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const sec = s % 60;
+  if (h > 0) return `${h}:${m.toString().padStart(2, '0')}:${sec.toString().padStart(2, '0')}`;
+  return `${m}:${sec.toString().padStart(2, '0')}`;
 }
 
 // Mirrors electron/playlist.js's isPlaylistUrl exactly. Kept in sync by
@@ -112,8 +144,30 @@ export default function App() {
   const [appUpdateNotice, setAppUpdateNotice] = useState(null);
   const [installingUpdate, setInstallingUpdate] = useState(false);
 
+  // yt-dlp's raw "speed" is the instantaneous rate of whatever chunk just
+  // arrived — genuinely jumpy update to update. This smooths it into the
+  // steady, slowly-settling number a real download manager shows, and
+  // recomputes ETA from that smoothed speed (rather than yt-dlp's own raw
+  // eta) so the two numbers on screen always agree with each other.
+  const smoothedSpeedRef = useRef(null);
+
   useEffect(() => {
-    const unsubscribe = window.api.onDownloadProgress((p) => setProgress(p));
+    const unsubscribe = window.api.onDownloadProgress((p) => {
+      if (p.status === 'downloading' && p.speed != null) {
+        const prev = smoothedSpeedRef.current;
+        smoothedSpeedRef.current = prev == null ? p.speed : prev * 0.75 + p.speed * 0.25;
+      } else if (p.status !== 'downloading') {
+        smoothedSpeedRef.current = null;
+      }
+
+      const smoothedSpeed = smoothedSpeedRef.current;
+      const remaining = p.totalBytes != null && p.downloadedBytes != null
+        ? p.totalBytes - p.downloadedBytes
+        : null;
+      const smoothedEta = smoothedSpeed && remaining != null ? remaining / smoothedSpeed : p.eta;
+
+      setProgress({ ...p, smoothedSpeed, smoothedEta });
+    });
     return unsubscribe;
   }, []);
 
@@ -469,6 +523,7 @@ export default function App() {
   async function handleDownload(section) {
     setDownloading(true);
     setProgress(null);
+    smoothedSpeedRef.current = null;
     setResult(null);
     setDownloadError(null);
     try {
@@ -979,16 +1034,34 @@ export default function App() {
         )}
 
         {progress && (
-          <div className="w-full">
+          <div className="w-full flex flex-col gap-1.5">
             <div className="h-2 rounded-full bg-neutral-800 overflow-hidden">
               <div
-                className={`h-full ${accent.fill} transition-all`}
-                style={{ width: `${percent ?? 0}%` }}
+                className={`h-full ${accent.fill} transition-[width] duration-200 ease-out ${
+                  percent == null ? 'animate-pulse opacity-60' : ''
+                }`}
+                style={{ width: `${percent ?? 100}%` }}
               />
             </div>
-            <p className="text-xs text-neutral-500 mt-1">
-              {progress.status === 'finished' ? 'Finishing up…' : `${percent ?? '?'}%`}
-            </p>
+            <div className="flex items-center justify-between text-xs text-neutral-500 font-mono tabular-nums">
+              <span>
+                {progress.status === 'finished'
+                  ? 'Finishing up…'
+                  : percent != null ? `${percent}%` : 'Downloading…'}
+              </span>
+              {progress.status === 'downloading' && (
+                <span className="flex gap-3">
+                  {progress.smoothedSpeed != null && <span>{formatSpeed(progress.smoothedSpeed)}</span>}
+                  {progress.smoothedEta != null && <span>{formatEta(progress.smoothedEta)} left</span>}
+                </span>
+              )}
+            </div>
+            {progress.status === 'downloading' && progress.downloadedBytes != null && (
+              <p className="text-xs text-neutral-600 text-right font-mono tabular-nums">
+                {formatBytes(progress.downloadedBytes)}
+                {progress.totalBytes != null && ` / ${formatBytes(progress.totalBytes)}`}
+              </p>
+            )}
           </div>
         )}
 
