@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, clipboard, dialog, shell } = require('electron');
+const { app, BrowserWindow, Menu, ipcMain, clipboard, dialog, shell } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const { randomUUID } = require('crypto');
@@ -156,9 +156,18 @@ async function runAppSelfUpdateCheck() {
 }
 
 function createWindow() {
+  // This is a single-purpose app with its own in-window Settings/History —
+  // the stock File/Edit/View/Window/Help bar (and the "Toggle Developer
+  // Tools" item buried in it) is Electron's default for any app that never
+  // explicitly sets one, not something this app wants. `null` removes it
+  // entirely on Windows/Linux; devtools stay reachable in dev builds via
+  // the openDevTools() call below, so nothing is actually lost.
+  Menu.setApplicationMenu(null);
+
   mainWindow = new BrowserWindow({
     width: 900,
     height: 700,
+    autoHideMenuBar: true,
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
@@ -350,6 +359,19 @@ ipcMain.handle('playlist:download', async (_event, options) => {
       }
     },
   });
+});
+
+// On-demand read for the toolbar's Paste button — distinct from the
+// passive checkClipboardForYouTubeLink() above, which only ever suggests a
+// link automatically on focus. This one is a direct "give me whatever's on
+// the clipboard right now" for the user's explicit click, so it doesn't
+// filter by isYouTubeUrl the way the auto-suggestion does.
+ipcMain.handle('clipboard:read', async () => {
+  try {
+    return clipboard.readText();
+  } catch {
+    return '';
+  }
 });
 
 ipcMain.handle('settings:get', async () => readSettings(settingsFilePath));

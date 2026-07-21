@@ -3,6 +3,32 @@ import ClipScrubber from './ClipScrubber';
 import { parseTimestamp, formatTimestamp, moveClipHandle } from './clip';
 import { ACCENT_COLORS, ACCENT_THEMES } from './theme';
 import { cleanErrorMessage } from './errors';
+import { IconGear, IconHistory, IconPaste, IconInfo, IconDownload, IconClose, IconSpinner } from './icons';
+
+// Toolbar-style icon-only button. `accent` takes the current theme's `.solid`
+// class string (see theme.js) so the Direct Download button can be the one
+// filled/colored control among otherwise-neutral icon buttons. Defined at
+// module scope (not inside App) so its identity is stable across renders —
+// an inline component redefined every render would remount on every keystroke.
+function IconButton({ onClick, disabled, label, accent, className = '', children }) {
+  const base =
+    'inline-flex items-center justify-center shrink-0 h-11 w-11 rounded-xl border transition-colors disabled:opacity-40 disabled:cursor-not-allowed';
+  const styles = accent
+    ? `${accent} border-transparent text-neutral-950`
+    : 'bg-neutral-900 border-neutral-800 text-neutral-400 hover:text-neutral-100 hover:border-neutral-700 hover:bg-neutral-800';
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      title={label}
+      aria-label={label}
+      className={`${base} ${styles} ${className}`}
+    >
+      {children}
+    </button>
+  );
+}
 
 function formatDuration(totalSeconds) {
   if (totalSeconds == null) return 'unknown length';
@@ -341,6 +367,20 @@ export default function App() {
     setClipboardSuggestion(null);
   }
 
+  // Toolbar Paste button — reads the clipboard directly on click, as
+  // opposed to the passive clipboard-detected banner above which only fires
+  // on window focus and only for recognized YouTube links. This works for
+  // any link (or playlist link) the user has copied, YouTube or otherwise.
+  async function handlePasteClick() {
+    try {
+      const text = await window.api.readClipboardText();
+      if (text) setUrl(text.trim());
+    } catch {
+      // Clipboard access can fail on some platforms — nothing to recover,
+      // the user can still type/paste manually into the field.
+    }
+  }
+
   async function handleGetInfo() {
     setLoadingInfo(true);
     setInfo(null);
@@ -545,6 +585,38 @@ export default function App() {
     }
   }
 
+  // Toolbar Direct Download button — skips the Get Info step entirely and
+  // downloads with whatever the current defaults are (best available
+  // quality, mp4, no clip trim). For a playlist link there's no getting
+  // around fetching the listing first (the queue needs each entry's id/url),
+  // so this fetches it and immediately queues every item rather than
+  // waiting for the user to press "Get Info" then "Download Selected".
+  async function handleDirectDownload() {
+    if (!url || downloading || queueRunning) return;
+
+    if (isPlaylistUrl(url)) {
+      setLoadingInfo(true);
+      setPlaylistError(null);
+      setInfo(null);
+      setInfoError(null);
+      try {
+        const fetched = await window.api.getPlaylistInfo(url);
+        setPlaylistInfo(fetched);
+        setSelectedIds(new Set(fetched.entries.map((e) => e.id)));
+        const items = fetched.entries.map((e) => ({ id: e.id, url: e.url, title: e.title }));
+        setQueueItems(items.map((e) => ({ id: e.id, title: e.title, status: 'pending', percent: null, error: null })));
+        setLoadingInfo(false);
+        await submitPlaylistDownload(items);
+      } catch (err) {
+        setPlaylistError(cleanErrorMessage(err.message));
+        setLoadingInfo(false);
+      }
+      return;
+    }
+
+    await handleDownload(null);
+  }
+
   // Called continuously while dragging either scrubber handle.
   function handleClipRangeChange({ start: nextStart, end: nextEnd }) {
     setClipStart(nextStart);
@@ -596,32 +668,20 @@ export default function App() {
   const accent = ACCENT_THEMES[settings.accentColor] || ACCENT_THEMES.emerald;
 
   return (
-    <div className="min-h-screen bg-neutral-950 text-neutral-100 flex flex-col items-center gap-6 p-8">
-      <h1 className="text-2xl font-semibold tracking-tight">Xebec Downloader</h1>
-
-      <div className="w-full max-w-md flex flex-col items-center gap-2">
-        <div className="flex gap-2 w-full">
-          <button
-            onClick={handleCheckEngine}
-            disabled={checkingEngine}
-            className="flex-1 rounded-lg bg-neutral-800 hover:bg-neutral-700 disabled:opacity-50 text-sm px-4 py-2"
-          >
-            {checkingEngine ? 'Checking…' : 'Check Engine'}
-          </button>
-          <button
-            onClick={() => setShowHistory((s) => !s)}
-            className="flex-1 rounded-lg bg-neutral-800 hover:bg-neutral-700 text-sm px-4 py-2"
-          >
-            History
-          </button>
-          <button
-            onClick={() => setShowSettings((s) => !s)}
-            className="flex-1 rounded-lg bg-neutral-800 hover:bg-neutral-700 text-sm px-4 py-2"
-          >
-            Settings
-          </button>
+    <div className="min-h-screen bg-neutral-950 text-neutral-100 flex flex-col items-center gap-6 p-6 sm:p-8">
+      <div className="w-full max-w-xl flex items-center justify-between gap-3">
+        <h1 className="text-2xl font-semibold tracking-tight">Xebec Downloader</h1>
+        <div className="flex items-center gap-2">
+          <IconButton onClick={() => setShowHistory(true)} label="History">
+            <IconHistory />
+          </IconButton>
+          <IconButton onClick={() => setShowSettings(true)} label="Settings">
+            <IconGear />
+          </IconButton>
         </div>
+      </div>
 
+      <div className="w-full max-w-xl flex flex-col items-center gap-2">
         {/* Phase 8: the app itself has a downloaded, verified update ready
             to install — separate from Phase 7's engine notices below. */}
         {appUpdateNotice && (
@@ -674,18 +734,29 @@ export default function App() {
           </div>
         ))}
         {rollbackError && <p className="text-red-400 text-xs">{rollbackError}</p>}
+      </div>
 
-        {engineError && <p className="text-red-400 text-xs">{engineError}</p>}
-        {engineStatus && (
-          <div className="w-full rounded-lg bg-neutral-900 border border-neutral-800 p-3 text-xs font-mono">
-            <div>yt-dlp: {engineStatus.ytDlp ?? `\u274c ${engineStatus.ytDlpError}`}</div>
-            <div>ffmpeg: {engineStatus.ffmpeg ?? `\u274c ${engineStatus.ffmpegError}`}</div>
-            <div>deno: {engineStatus.deno ?? `\u274c ${engineStatus.denoError}`}</div>
-          </div>
-        )}
+      {/* History — icon-triggered modal (was a plain-text top button before). */}
+      {showHistory && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
+          onClick={() => setShowHistory(false)}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className="w-full max-w-md rounded-2xl bg-neutral-900 border border-neutral-800 p-5 flex flex-col gap-3 text-xs max-h-[80vh] overflow-y-auto"
+          >
+            <div className="flex items-center justify-between">
+              <span className="text-sm font-semibold text-neutral-100">History</span>
+              <button
+                onClick={() => setShowHistory(false)}
+                aria-label="Close"
+                className="text-neutral-500 hover:text-neutral-200 rounded-lg p-1"
+              >
+                <IconClose />
+              </button>
+            </div>
 
-        {showHistory && (
-          <div className="w-full rounded-lg bg-neutral-900 border border-neutral-800 p-3 flex flex-col gap-2 text-xs">
             {historyError && <p className="text-red-400">{historyError}</p>}
             <div className="flex items-center justify-between">
               <span className="text-neutral-400">{history.length} download{history.length === 1 ? '' : 's'}</span>
@@ -719,10 +790,32 @@ export default function App() {
               </div>
             )}
           </div>
-        )}
+        </div>
+      )}
 
-        {showSettings && (
-          <div className="w-full rounded-lg bg-neutral-900 border border-neutral-800 p-3 flex flex-col gap-3 text-xs">
+      {/* Settings — icon-triggered modal. "Check Engine" now lives in here
+          (was its own top-level button before) alongside the rest of the
+          app's deep settings. */}
+      {showSettings && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
+          onClick={() => setShowSettings(false)}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className="w-full max-w-md rounded-2xl bg-neutral-900 border border-neutral-800 p-5 flex flex-col gap-4 text-xs max-h-[80vh] overflow-y-auto"
+          >
+            <div className="flex items-center justify-between">
+              <span className="text-sm font-semibold text-neutral-100">Settings</span>
+              <button
+                onClick={() => setShowSettings(false)}
+                aria-label="Close"
+                className="text-neutral-500 hover:text-neutral-200 rounded-lg p-1"
+              >
+                <IconClose />
+              </button>
+            </div>
+
             {settingsError && <p className="text-red-400">{settingsError}</p>}
 
             <div className="flex flex-col gap-1">
@@ -774,11 +867,32 @@ export default function App() {
                 ))}
               </div>
             </div>
-          </div>
-        )}
-      </div>
 
-      <div className="w-full max-w-md flex flex-col gap-3">
+            <div className="flex flex-col gap-2 border-t border-neutral-800 pt-3">
+              <div className="flex items-center justify-between">
+                <span className="text-neutral-400">Engine</span>
+                <button
+                  onClick={handleCheckEngine}
+                  disabled={checkingEngine}
+                  className="rounded-lg bg-neutral-800 hover:bg-neutral-700 disabled:opacity-50 px-3 py-1.5"
+                >
+                  {checkingEngine ? 'Checking…' : 'Check Engine'}
+                </button>
+              </div>
+              {engineError && <p className="text-red-400">{engineError}</p>}
+              {engineStatus && (
+                <div className="rounded-lg bg-neutral-950 border border-neutral-800 p-3 font-mono">
+                  <div>yt-dlp: {engineStatus.ytDlp ?? `\u274c ${engineStatus.ytDlpError}`}</div>
+                  <div>ffmpeg: {engineStatus.ffmpeg ?? `\u274c ${engineStatus.ffmpegError}`}</div>
+                  <div>deno: {engineStatus.deno ?? `\u274c ${engineStatus.denoError}`}</div>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      <div className="w-full max-w-xl flex flex-col gap-3">
         {clipboardSuggestion && (
           <div className="rounded-lg bg-neutral-900 border border-neutral-800 p-2 flex items-center gap-2 text-xs">
             <span className="truncate flex-1 text-neutral-300">
@@ -799,20 +913,28 @@ export default function App() {
           </div>
         )}
 
-        <input
-          value={url}
-          onChange={(e) => setUrl(e.target.value)}
-          placeholder="Paste a YouTube URL"
-          className={`rounded-lg bg-neutral-900 border border-neutral-800 px-4 py-2 text-sm focus:outline-none focus:ring-2 ${accent.ring}`}
-        />
-
-        <button
-          onClick={handleGetInfo}
-          disabled={!url || loadingInfo}
-          className="rounded-lg bg-neutral-800 hover:bg-neutral-700 disabled:opacity-50 text-sm px-4 py-2"
-        >
-          {loadingInfo ? 'Fetching info…' : 'Get Info'}
-        </button>
+        <div className="w-full flex items-center gap-2">
+          <input
+            value={url}
+            onChange={(e) => setUrl(e.target.value)}
+            placeholder="Paste a YouTube link, playlist, or any supported URL"
+            className={`flex-1 min-w-0 rounded-xl bg-neutral-900 border border-neutral-800 px-4 py-3 text-sm focus:outline-none focus:ring-2 ${accent.ring}`}
+          />
+          <IconButton onClick={handlePasteClick} label="Paste from clipboard">
+            <IconPaste />
+          </IconButton>
+          <IconButton onClick={handleGetInfo} disabled={!url || loadingInfo} label="Get info">
+            {loadingInfo ? <IconSpinner /> : <IconInfo />}
+          </IconButton>
+          <IconButton
+            onClick={handleDirectDownload}
+            disabled={!url || downloading || queueRunning}
+            label="Direct download (default settings)"
+            accent={accent.solid}
+          >
+            {downloading || queueRunning ? <IconSpinner /> : <IconDownload />}
+          </IconButton>
+        </div>
 
         {infoError && <p className="text-red-400 text-xs">{infoError}</p>}
         {playlistError && <p className="text-red-400 text-xs">{playlistError}</p>}

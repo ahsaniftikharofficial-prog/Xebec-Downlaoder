@@ -4,6 +4,7 @@ const { contextBridge, ipcRenderer } = require('electron');
 // here, deliberately, one function at a time — never the raw ipcRenderer.
 contextBridge.exposeInMainWorld('api', {
   checkEngine: () => ipcRenderer.invoke('engine:check'),
+  readClipboardText: () => ipcRenderer.invoke('clipboard:read'),
   getVideoInfo: (url) => ipcRenderer.invoke('video:getInfo', url),
   downloadVideo: (options) => ipcRenderer.invoke('video:download', options),
   downloadThumbnail: (options) => ipcRenderer.invoke('thumbnail:download', options),
